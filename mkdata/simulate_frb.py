@@ -49,7 +49,7 @@ for i in range(len(data) // group):
     frb = FRBEvent(background=curr_data)
     path = '{}/{}/{}-V{}.npy'.format(output, rank, frb.input, rank)
     path = find_file(path, 'npy')
-    frb.save(path)
+    frb.save(path) #TODO: Update this save method to use hdf5
     metadata.append(frb.get_params())
 
 # Save the metadata for the simulations
