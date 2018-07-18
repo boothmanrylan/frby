@@ -71,7 +71,7 @@ class RFI(object):
         params = params or []
         self.rfi = func(self.rfi, *params)
 
-    def display(self):
+    def plot(self):
         """
         Plots self.rfi
         """
@@ -243,4 +243,4 @@ def masked_delta(data, width=50, height=50, loc=100, rand=1):
 if __name__ == '__main__':
     rfi = NormalRFI((1024, 1000), 400*u.MHz, 800*u.MHz, 200*u.ms)
     rfi.time_func(masked_delta, False, [5, 100, 75, 0.1])
-    rfi.display()
+    rfi.plot()
