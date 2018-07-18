@@ -18,18 +18,22 @@ class RFI(object):
         """
         self.nfreq = background.shape[0]
         self.ntime = background.shape[1]
+
         try:
             self.duration = duration.to(u.ms)
         except AttributeError:
             self.duration = duration * u.ms
+
         try:
             self.min_freq = min_freq.to(u.MHz)
         except AttributeError:
             self.min_freq = min_freq * u.MHz
+
         try:
             self.max_freq = max_freq.to(u.MHz)
         except AttributeError:
             self.max_freq = max_freq * u.MHz
+
         self.bw = self.max_freq - self.min_freq
         self.rfi = background
 
@@ -81,8 +85,8 @@ class NormalRFI(RFI):
     Creates an RFI object with a gaussian/normally distributed background.
     """
     def __init__(self, shape, min_freq, max_freq, duration, sigma=0, mu=1):
-        background = np.random.normal(loc=sigma, scale=mu, size=shape)
-        RFI.__init__(self, background, min_freq, max_freq, duration)
+        bg = np.random.normal(loc=sigma, scale=mu, size=shape)
+        super(NormalRFI, self).__init__(bg, min_freq, max_freq, duration)
 
 
 class UniformRFI(RFI):
@@ -90,8 +94,8 @@ class UniformRFI(RFI):
     Creates an RFI object with a uniformly distributed background.
     """
     def __init__(self, shape, min_freq, max_freq, duration, low=-3, high=3):
-        background = np.random.uniform(low=low, high=high, size=shape)
-        RFI.__init__(self, background, min_freq, max_freq, duration)
+        bg = np.random.uniform(low=low, high=high, size=shape)
+        super(UniformRFI, self).__init__(bg, min_freq, max_freq, duration)
 
 
 class PoissonRFI(RFI):
@@ -99,8 +103,8 @@ class PoissonRFI(RFI):
     Creates an RFI object with a Poisson distribution background.
     """
     def __init__(self, shape, min_freq, max_freq, duration, lam=1):
-        background = np.random.poisson(lam=lam, size=shape)
-        RFI.__init__(self, biackground, min_freq, max_freq, duration)
+        bg = np.random.poisson(lam=lam, size=shape)
+        super(PoissonRFI, self).__init__(bg, min_freq, max_freq, duration)
 
 
 class SolidRFI(RFI):
@@ -108,8 +112,8 @@ class SolidRFI(RFI):
     Creates an RFI object with a background full of a single value
     """
     def __init__(self, shape, min_freq, max_freq, duration, val=0):
-        background = np.full(shape, fill_value=val, dtype='float64')
-        RFI.__init__(self, background, min_freq, max_freq, duration)
+        bg = np.full(shape, fill_value=val, dtype='float64')
+        super(SolidRFI, self).__init__(bg, min_freq, max_freq, duration)
 
 
 def fourier_lowpass_filter(data, cutoff):
