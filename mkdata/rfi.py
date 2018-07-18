@@ -16,64 +16,89 @@ class RFI(object):
         max_freq (Quantity):  The upper limit of the bandwidth.
         duration (Quantity):  The amount of time contained in background.
         """
-        self.nfreq = background.shape[0]
-        self.ntime = background.shape[1]
+        nfreq = background.shape[0]
+        ntime = background.shape[1]
 
         try:
-            self.duration = duration.to(u.ms)
+            duration = duration.to(u.ms)
         except AttributeError:
-            self.duration = duration * u.ms
+            duration = duration * u.ms
 
         try:
-            self.min_freq = min_freq.to(u.MHz)
+            min_freq = min_freq.to(u.MHz)
         except AttributeError:
-            self.min_freq = min_freq * u.MHz
+            min_freq = min_freq * u.MHz
 
         try:
-            self.max_freq = max_freq.to(u.MHz)
+            max_freq = max_freq.to(u.MHz)
         except AttributeError:
-            self.max_freq = max_freq * u.MHz
+            max_freq = max_freq * u.MHz
 
-        self.bw = self.max_freq - self.min_freq
+        bandwidth = max_freq - min_freq
+
+        frequency = np.linspace(max_freq, min_freq, bandwidth)
+        time = np.linsapce(0, duration, ntime)
+
+        self.frequency_array = np.vstack([frequency] * ntime).T
+        self.time_array = np.vstack([time] * nfreq)
         self.rfi = background
 
-    def freq_func(self, func, multiply=True, params=None):
+    def apply_function(self, func, input, freq_range, time_range, **params):
         """
-        Applies the function func to the frequency values of self.rfi,
-        multiplies self.rfi by the result.
-        """
-        params = params or []
-        x = np.linspace(self.max_freq, self.min_freq, self.bw)
-        x = np.vstack([x] * self.ntime).T
-        if multiply:
-            self.rfi *= func(x.value, *params)
-        else:
-            self.rfi += func(x.value, *params)
+        Applies the function to the current rfi to update the rfi
 
-    def time_func(self, func, multiply=True, params=None):
+        Params:
+            func (function): The function that will be applied to the data,
+                             must take three positional arguments x (The data
+                             the function acts on), rfi (The rfi before the
+                             function is applied) and boolean (A boolean array
+                             that dictates where the function is applies)
+                             Function must return the updated rfi.
+            input (str):     Determines what x will be for func. If 'time' than
+                             x will be an array containing the time values of
+                             each index regardless of frequency. If 'freq' than
+                             x will be an array containing the frequency values
+                             of each in dex regardless of time. Otherwise x
+                             will be the values of rfi.
+            freq_range (list or None): Determines the range(s) of frequencies
+                                       that are affected by the function. If
+                                       None the entire bandwidth is affected.
+                                       Otherwise each element of the list should
+                                       be a tuple specifying a start and stop
+                                       value that indicates a range that will be
+                                       affected.
+            time_range (list or None): Determine the range(s) if time values
+                                       that are affected by the function.
+                                       Behaves the same as freq_range.
+            **params (optional dict):  Additional keyword arguments to pass to
+                                       the function.
+        Returns: None
         """
-        Applies the function func to the time value of self.rfi, multiplies
-        self.rfi by the result.
-        """
-        params = params or []
-        x = np.linspace(0, self.duration, self.ntime)
-        x = np.vstack([x] * self.nfreq)
-        if multiply:
-            self.rfi *= func(x.value, *params)
+        if input == 'freq':
+            x = self.frequency_array
+        elif input == 'time':
+            x = self.time_array
         else:
-            self.rfi += func(x.value, *params)
+            x = self.rfi
+        if freq_range is None:
+            freq_coefs = np.ones_like(self.rfi)
+        else:
+            freq_coefs = np.zeros_like(self.rfi)
+            for start, stop in freq_range:
+                freq_coefs[start:stop, :] = 1
+        if time_range is None:
+            time_coefs = np.one_like(self.rfi)
+        else:
+            time_coefs = np.zeros_like(self.rfi)
+            for start, stop in time_range:
+                time_coefs[:, start:stop] = 1
+        coefs = (time_coefs * freq_coefs).astype(bool)
+        self.rfi = func(x, self.rfi, coefs, **params)
 
-    def apply_func(self, func, params=None):
-        """
-        Passes self.rfi as the first parameter to the function func, updates
-        self.rfi to equal the value returned by func.
-        """
-        params = params or []
-        self.rfi = func(self.rfi, *params)
 
     def plot(self):
         """
-        Plots self.rfi
+        Plots self.rfi with a colorbar
         """
         plt.imshow(self.rfi, interpolation='nearest', aspect='auto')
         plt.colorbar()
@@ -100,7 +125,7 @@ class UniformRFI(RFI):
 
 class PoissonRFI(RFI):
     """
-    Creates an RFI object with a Poisson distribution background.
+    Creates an RFI object with a Poisson distribution as the background.
     """
     def __init__(self, shape, min_freq, max_freq, duration, lam=1):
         bg = np.random.poisson(lam=lam, size=shape)
@@ -116,17 +141,19 @@ class SolidRFI(RFI):
         super(SolidRFI, self).__init__(bg, min_freq, max_freq, duration)
 
 
-def fourier_lowpass_filter(data, cutoff):
+def fourier_lowpass_filter(x, rfi, boolean, cutoff):
     """
     fourier transforms data, sets all values to 0 that are higher than cutoff,
     then returns the inverse fourier transform of that
     """
-    fourier_data = np.fft.fft(data)
-    filtered_data = np.where(data < cutoff, data, 0)
-    return np.real(np.fft.ifft(filtered_data))
+    fourier_data = np.fft.fft(x)
+    filtered_data = np.where(fourier_data < cutoff, fourier_data, 0)
+    real_data = np.real(np.fft.ifft(filtered_data))
+    rfi = np.where(boolean, real_data, rfi)
+    return rfi
 
 
-def butterworth_lowpass_filter(data, cutoff, sr, N):
+def butterworth_lowpass_filter(x, rfi, boolean, cutoff, sr, N):
     """
     Applies an Nth order butterworth lowpass filter to data, with a cutoff
     frequency of cutoff and a sample rate of st.
@@ -134,46 +161,81 @@ def butterworth_lowpass_filter(data, cutoff, sr, N):
     nyquist = 0.5 * sr
     cutoff /= nyquist
     b, a = signal.butter(N, cutoff)
-    return signal.lfilter(b, a, data)
+    filtered_data = signal.lfilter(b, a, x)
+    rfi = np.where(boolean, filtered_data, rfi)
+    return rfi
 
 
-def one_over_f(alpha, beta):
+
+def one_over_f(x, rfi, boolean, alpha, beta):
     """
     Returns the function f(x) = beta / x**alpha
     """
     # TODO: implement the more complicated 1/f rfi outlined in this paper:
     # https://arxiv.org/pdf/1711.07843.pdf
-    return lambda x: beta / (np.where(x != 0, x, 1e-9)**alpha)
+    def func(x):
+        x = np.where(x != 0, x, 1e-9)
+        return beta / (x ** alpha)
+    x = func(x)
+    rfi = np.where(boolean, x, rfi)
+    return rfi
 
 
-def rand_sinusoid(amplitude, freq, phase):
+def rand_sinusoid(amp, freq, phase):
     """
-    Returns a random sinusoidal function with ampltidude, freq, and phase drawn
-    from random normal distributions centered at their given values.
+    Creates a random sinusoidal function with amp, freq, and phase drawn
+    from random normal distributions centered at the given values.
     """
-    A = np.random.normal(amplitude)
-    f = 2 * np.pi * np.random.normal(freq)
-    p = np.random.normal(phase)
-    func = np.sin if np.random.normal() > 0 else np.cos
-    return lambda x: A * func((f * x) + p)
+    amp = np.random.normal(amp)
+    freq = 2 * np.pi * np.random.normal(freq)
+    phase = np.random.normal(phase)
+    sinusoid = np.sin if np.random.normal() > 0 else np.cos
+    return lambda x: amp * sinusoid((x * freq) + phase)
 
 
-def sinusoidal_sum(n, a, f, p):
+def output(x, rfi, boolean, add):
     """
-    Returns a function that is the sum of n rand_sinusoid functions
+    Helper function for functions that have an add to and multiple by method.
+    """
+    if add:
+        x = np.where(boolean, x, 0)
+        rfi += x
+    else:
+        x = np.where(boolean, x, 1)
+        rfi *= x
+    return rfi
+
+
+def sinusoid(x, rfi, boolean, amp=1.0, freq=0.5, phase=0.0, add=True):
+    """
+    Applies a random sinusoid function to x. Where boolean is true either
+    multiplies or adds the result to rfi (depending on if add is True or False)
+    and returns the result of that operation.
+    """
+    func = rand_sinusoid(amp, freq, phase)
+    x = func(x)
+    return output(x, rfi, boolean, add)
+
+
+def sinusoidal_sum(x, rfi, boolean, n=2, amp=1, freq=0.5, phase=0, add=True):
+    """
+    Applies a function that is the sum of n rand_sinusoid functions
     """
     def sum(x, f1, f2):
         return f1(x) + f2(x)
     def func(x):
         for _ in range(n):
-            x = sum(x, rand_sinusoid(a, f, p), rand_sinusoid(a, f, p))
+            x = sum(x, rand_sinusoid(amp, freq, phase),
+                    rand_sinusoid(amp, freq, phase))
         return x
-    return func
+    x = func(x)
+    return output(x, rfi, boolean, add)
 
 
-def sinusoidal_product(n, a, f, p):
+def sinusoidal_product(x, rfi, boolean, n=2, amp=1, freq=0.5, phase=0,
+                       add=True):
     """
-    Returns a function that is the product of n rand_sinusoid functions
+    Applies a function that is the product of n rand_sinusoid functions
     """
     def product(x, f1, f2):
         return f1(x) * f2(x)
@@ -181,16 +243,29 @@ def sinusoidal_product(n, a, f, p):
         for _ in range(n):
             x = product(x, rand_sinusoid(a, f, p), rand_sinusoid(a, f, p))
         return x
-    return func
+    x = func(x)
+    return output(x, rfi, boolean, add)
 
 
-def patches(data, N, min_size=2, max_size=20, patch_size=1000):
+def changing_sinusoid(x, rfi, boolean, func=lambda x: 1/np.exp(x), b=100,
+                      amp=1, freq=0.5, phase=0, add=True):
+    """
+    Applies a function that is a random sinusoid that changes over time. Where
+    f(x) is the randomized sinusoid, and g(x) is func the output is g(f(x)).
+    This is either multiplied or added to x, depending on the value of add.
+    """
+    f1 = rand_sinusoid(amp, freq, phase)
+    x = func(f1(x))
+    return output(x, rfi, boolean, add)
+
+
+def patches(data, rfi, boolean, N=5, min_size=2, max_size=20, patch_size=1000):
     """
     Creates N random "patches" at random locations in data
     """
-    xs = np.random.uniform(0, data.shape[0], N)
-    ys = np.random.uniform(0, data.shape[1], N)
-    rs = np.random.uniform(min_size, max_size, N)
+    xs = np.random.uniform((0, data.shape[0]), size=N)
+    ys = np.random.uniform((0, data.shape[1]), size=N)
+    rs = np.random.uniform((min_size, max_size), size=N)
     for idx, x in enumerate(xs):
         y = ys[idx]
         r = rs[idx]
@@ -207,10 +282,11 @@ def patches(data, N, min_size=2, max_size=20, patch_size=1000):
             Y = np.where(Y < data.shape[1], Y, data.shape[1]-1)
             Y = np.where(Y > 0, Y, 0)
             data[X, Y] = np.abs(data[X, Y]) * 1.01
-    return data
+        rfi = np.where(boolean, data, rfi)
+    return rfi
 
 
-def masked_delta(data, width=50, height=50, loc=100, rand=1):
+def masked_delta(data, rfi, boolean, width=50, height=50, loc=100, rand=1):
     def delta(x, width, height, loc):
         loc = np.random.normal(loc, rand, size=x.shape[0])
         loc = np.vstack([loc] * x.shape[1]).T
@@ -237,10 +313,11 @@ def masked_delta(data, width=50, height=50, loc=100, rand=1):
     a1 = 0.9999 * loc
     a2 = 1.0001 * loc
     data = delta(data, width, height, loc) * mask(data, a1, a2)
-    return data
+    rfi = np.where(boolean, data, rfi)
+    return rfi
 
 
 if __name__ == '__main__':
     rfi = NormalRFI((1024, 1000), 400*u.MHz, 800*u.MHz, 200*u.ms)
-    rfi.time_func(masked_delta, False, [5, 100, 75, 0.1])
+    rfi.time_func(changing_sinusoid, params=[-3, 10, 5, 0.333, -0.333])
     rfi.plot()
