@@ -9,7 +9,7 @@ from baseband.helpers import sequentialfile as sf
 import astropy.units as u
 from scipy import signal
 import matplotlib
-matplotlib.use('Agg') # Needed when running on scinet
+# matplotlib.use('Agg') # Needed when running on scinet
 import matplotlib.pyplot as plt
 from math import gcd
 from tools import read_vdif
@@ -122,7 +122,6 @@ class FRBEvent(object):
              self.rate = rate
              self.delta_t = (1/rate).to(u.ms)
         except TypeError as E: # background isn't a file or the file doesn't exist
-            raise(E)
             try: # background is a numpy array 
                 self.background = background
                 self.NFREQ = background.shape[0]
