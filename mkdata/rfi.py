@@ -9,7 +9,8 @@ class RFI(object):
     """
     Base RFI class.
     """
-    def __init__(self, background, min_freq, max_freq, duration):
+    def __init__(self, background, min_freq=400*u.MHz, max_freq=800*u.MHz,
+                 duration=1000*u.ms):
         """
         background (ndarray): The rfi background data.
         min_freq (Quantity):  The lower limit of the bandwidth.
@@ -34,16 +35,15 @@ class RFI(object):
         except AttributeError:
             max_freq = max_freq * u.MHz
 
-        bandwidth = max_freq - min_freq
-
-        frequency = np.linspace(max_freq, min_freq, bandwidth)
-        time = np.linsapce(0, duration, ntime)
+        frequency = np.linspace(max_freq.value, min_freq.value, nfreq)
+        time = np.linspace(0, duration.value, ntime)
 
         self.frequency_array = np.vstack([frequency] * ntime).T
         self.time_array = np.vstack([time] * nfreq)
         self.rfi = background
 
-    def apply_function(self, func, input, freq_range, time_range, **params):
+    def apply_function(self, func, input='value', freq_range=None,
+                       time_range=None, **params):
         """
         Applies the function to the current rfi to update the rfi
 
@@ -87,7 +87,7 @@ class RFI(object):
             for start, stop in freq_range:
                 freq_coefs[start:stop, :] = 1
         if time_range is None:
-            time_coefs = np.one_like(self.rfi)
+            time_coefs = np.ones_like(self.rfi)
         else:
             time_coefs = np.zeros_like(self.rfi)
             for start, stop in time_range:
@@ -109,7 +109,8 @@ class NormalRFI(RFI):
     """
     Creates an RFI object with a gaussian/normally distributed background.
     """
-    def __init__(self, shape, min_freq, max_freq, duration, sigma=0, mu=1):
+    def __init__(self, shape=(1024, 2**15), min_freq=400*u.MHz,
+                 max_freq=800*u.MHz, duration=100*u.ms, sigma=0, mu=1):
         bg = np.random.normal(loc=sigma, scale=mu, size=shape)
         super(NormalRFI, self).__init__(bg, min_freq, max_freq, duration)
 
@@ -118,7 +119,8 @@ class UniformRFI(RFI):
     """
     Creates an RFI object with a uniformly distributed background.
     """
-    def __init__(self, shape, min_freq, max_freq, duration, low=-3, high=3):
+    def __init__(self, shape=(1024, 2**15), min_freq=400*u.MHz,
+                 max_freq=800*u.MHz, duration=1000*u.ms, low=-3, high=3):
         bg = np.random.uniform(low=low, high=high, size=shape)
         super(UniformRFI, self).__init__(bg, min_freq, max_freq, duration)
 
@@ -127,7 +129,8 @@ class PoissonRFI(RFI):
     """
     Creates an RFI object with a Poisson distribution as the background.
     """
-    def __init__(self, shape, min_freq, max_freq, duration, lam=1):
+    def __init__(self, shape=(1024, 2**15), min_freq=400*u.MHz,
+                 max_freq=800*u.MHz, duration=1000*u.ms, lam=1):
         bg = np.random.poisson(lam=lam, size=shape)
         super(PoissonRFI, self).__init__(bg, min_freq, max_freq, duration)
 
@@ -136,7 +139,8 @@ class SolidRFI(RFI):
     """
     Creates an RFI object with a background full of a single value
     """
-    def __init__(self, shape, min_freq, max_freq, duration, val=0):
+    def __init__(self, shape=(1024, 2**15), min_freq=400*u.MHz,
+                 max_freq=800*u.MHz, duration=1000*u.ms, val=0):
         bg = np.full(shape, fill_value=val, dtype='float64')
         super(SolidRFI, self).__init__(bg, min_freq, max_freq, duration)
 
@@ -156,7 +160,7 @@ def fourier_lowpass_filter(x, rfi, boolean, cutoff):
 def butterworth_lowpass_filter(x, rfi, boolean, cutoff, sr, N):
     """
     Applies an Nth order butterworth lowpass filter to data, with a cutoff
-    frequency of cutoff and a sample rate of st.
+    frequency of cutoff and a sample rate of sr.
     """
     nyquist = 0.5 * sr
     cutoff /= nyquist
@@ -259,30 +263,30 @@ def changing_sinusoid(x, rfi, boolean, func=lambda x: 1/np.exp(x), b=100,
     return output(x, rfi, boolean, add)
 
 
-def patches(data, rfi, boolean, N=5, min_size=2, max_size=20, patch_size=1000):
+def patches(data, rfi, boolean, N=5, min_size=2, max_size=20, patch_size=2000,):
     """
     Creates N random "patches" at random locations in data
     """
-    xs = np.random.uniform((0, data.shape[0]), size=N)
-    ys = np.random.uniform((0, data.shape[1]), size=N)
-    rs = np.random.uniform((min_size, max_size), size=N)
+    xs = np.random.uniform(0, data.shape[0], size=N)
+    ys = np.random.uniform(0, data.shape[1], size=N)
+    rs = np.random.uniform(min_size, max_size, size=N)
     for idx, x in enumerate(xs):
         y = ys[idx]
         r = rs[idx]
         xx = [np.random.normal(x)]
-        yy = [np.random.normal(y)]
+        yy = [np.random.normal(y)] * patch_size
         for i in range(patch_size - 1):
-            xx.append(np.random.normal(xx[i]) + np.random.normal(0)*2)
-            yy.append(np.random.normal(yy[i]) + np.random.normal(0)*2)
+            xx.append(np.random.normal(xx[i]) - np.abs((np.random.normal(0, 0.1))))
         rr = np.random.normal(r, 10, patch_size)
-        circles = [draw.circle(xx[i], yy[i], rr[i]) for i in range(patch_size)]
-        for X, Y in circles:
+        x, y, r1, r2 = xx[i], yy[i], rr[i], rr[i]/16
+        patches = [draw.ellipse(x, y, r1, r2) for i in range(patch_size)]
+        for X, Y in patches:
             X = np.where(X < data.shape[0], X, data.shape[0]-1)
             X = np.where(X > 0, X, 0)
             Y = np.where(Y < data.shape[1], Y, data.shape[1]-1)
             Y = np.where(Y > 0, Y, 0)
-            data[X, Y] = np.abs(data[X, Y]) * 1.01
-        rfi = np.where(boolean, data, rfi)
+            data[X, Y] = np.abs(data[X, Y]) * 1.001
+    rfi = np.where(boolean, data, rfi)
     return rfi
 
 
@@ -318,6 +322,7 @@ def masked_delta(data, rfi, boolean, width=50, height=50, loc=100, rand=1):
 
 
 if __name__ == '__main__':
-    rfi = NormalRFI((1024, 1000), 400*u.MHz, 800*u.MHz, 200*u.ms)
-    rfi.time_func(changing_sinusoid, params=[-3, 10, 5, 0.333, -0.333])
+    rfi = NormalRFI(shape=(1024, 1000))
+    rfi.apply_function(sinusoidal_sum, input='freq')
+    rfi.apply_function(patches)
     rfi.plot()
