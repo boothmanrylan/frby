@@ -43,8 +43,12 @@ class RFI(object):
         self.frequency_array = np.vstack([frequency] * ntime).T
         self.time_array = np.vstack([time] * nfreq)
         self.rfi = background
+        self.attributes = {'min_freq': min_freq, 'max_freq': max_freq,
+                           'frequency_units': min_freq.unit, 'class': 'rfi',
+                           'functions': [], 'time_units': duration.unit,
+                           'duration': duration}
 
-    def apply_function(self, func, input='value', freq_range=None,
+    def apply_function(self, func, name=None, input='value', freq_range=None,
                        time_range=None, **params):
         """
         Applies the function to the current rfi to update the rfi
@@ -56,12 +60,14 @@ class RFI(object):
                              function is applied) and boolean (A boolean array
                              that dictates where the function is applies)
                              Function must return the updated rfi.
-            input (str):     Determines what x will be for func. If 'time' than
-                             x will be an array containing the time values of
-                             each index regardless of frequency. If 'freq' than
-                             x will be an array containing the frequency values
-                             of each in dex regardless of time. Otherwise x
-                             will be the values of rfi.
+            name (str or None): What the function will be called in
+                                self.attributes, if None str(func) will be used
+                                instead.
+            input (str): Determines what x will be for func. If 'time' than x
+                         will be an array containing the time values of each
+                         index regardless of frequency. If 'freq' than x will be
+                         an array containing the frequency values of each index
+                         regardless of time. Otherwise x will be self.rfi.
             freq_range (list or None): Determines the range(s) of frequencies
                                        that are affected by the function. If
                                        None the entire bandwidth is affected.
@@ -76,6 +82,8 @@ class RFI(object):
                                        the function.
         Returns: None
         """
+        if name is None:
+            name = str(func)
         if input == 'freq':
             x = self.frequency_array
         elif input == 'time':
@@ -96,7 +104,11 @@ class RFI(object):
                 time_coefs[:, start:stop] = 1
         coefs = (time_coefs * freq_coefs).astype(bool)
         self.rfi = func(x, self.rfi, coefs, **params)
-
+        self.attributes['functions'].append(name)
+        params_list = ['{}-{}'.format(name, p) for p in params.keys()]
+        self.attributes[name] = params_list
+        for idx, key in enumerate(params.keys()):
+            self.attributes[params_list[idx]] = params[key]
 
     def plot(self):
         """
@@ -115,6 +127,9 @@ class NormalRFI(RFI):
                  max_freq=800*u.MHz, duration=100*u.ms, sigma=0, mu=1):
         bg = np.random.normal(loc=sigma, scale=mu, size=shape)
         super(NormalRFI, self).__init__(bg, min_freq, max_freq, duration)
+        self.attributes['type'] = 'normal'
+        self.attributes['normal_loc'] = sigma
+        self.attributes['normal_scale'] = mu
 
 
 class UniformRFI(RFI):
@@ -125,6 +140,9 @@ class UniformRFI(RFI):
                  max_freq=800*u.MHz, duration=1000*u.ms, low=-3, high=3):
         bg = np.random.uniform(low=low, high=high, size=shape)
         super(UniformRFI, self).__init__(bg, min_freq, max_freq, duration)
+        self.attributes['type'] = 'uniform'
+        self.attributes['uniform_low'] = low
+        self.attributes['uniform_high'] = high
 
 
 class PoissonRFI(RFI):
@@ -135,6 +153,8 @@ class PoissonRFI(RFI):
                  max_freq=800*u.MHz, duration=1000*u.ms, lam=1):
         bg = np.random.poisson(lam=lam, size=shape)
         super(PoissonRFI, self).__init__(bg, min_freq, max_freq, duration)
+        self.attributes['type'] = 'poisson'
+        self.attributes['poisson_lam'] = lam
 
 
 class SolidRFI(RFI):
@@ -342,6 +362,8 @@ def masked_delta(data, rfi, boolean, width=50, height=50, loc=100, rand=1):
 
 if __name__ == '__main__':
     rfi = NormalRFI(shape=(1024, 1000))
-    rfi.apply_function(sinusoidal_sum, input='freq')
-    rfi.apply_function(patches)
+    rfi.apply_function(sinusoidal_sum, name='sinusoidal_sum', input='freq', amp=1, freq=1.5,
+            phase=0.333)
+    rfi.apply_function(patches, name='patches', N=100)
     rfi.plot()
+    print(rfi.attributes)
