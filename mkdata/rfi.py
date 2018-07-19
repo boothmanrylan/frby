@@ -3,6 +3,7 @@ from scipy import signal
 import matplotlib.pyplot as plt
 import astropy.units as u
 from skimage import draw
+from tools import read_vdif
 
 
 class RFI(object):
@@ -20,6 +21,7 @@ class RFI(object):
         nfreq = background.shape[0]
         ntime = background.shape[1]
 
+        # if unit conversion fails assume default units
         try:
             duration = duration.to(u.ms)
         except AttributeError:
@@ -143,6 +145,23 @@ class SolidRFI(RFI):
                  max_freq=800*u.MHz, duration=1000*u.ms, val=0):
         bg = np.full(shape, fill_value=val, dtype='float64')
         super(SolidRFI, self).__init__(bg, min_freq, max_freq, duration)
+        self.attributes['type'] = 'solid'
+        self.attributes['solid_fill_value'] = val
+
+
+class TelescopeRFI(RFI):
+    """
+    Creates an RFI object where the background is data taken from a telescope.
+    """
+    def __init__(self, files, rate_in, min_freq, max_freq,
+                 rate_out=1e-3*u.MHz):
+        data, file_names, rate_out = read_vdif(files, rate_in, rate_out)
+        duration = (data.shape[1] / rate_out).to(u.ms)
+        super(TelescopeRFI, self).__init__(data, min_freq, max_freq, duration)
+        self.attributes['type'] = 'telescope'
+        self.attributes['telescope_files'] = file_names
+        self.attributes['telescope_rate_in'] = rate_in
+        self.attributes['telescope_rate_out'] = rate_out
 
 
 def fourier_lowpass_filter(x, rfi, boolean, cutoff):
