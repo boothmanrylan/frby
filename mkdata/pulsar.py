@@ -4,9 +4,9 @@ import astropy.units as u
 # import matplotlib # Needed when running on scinet
 # matplotlib.use('Agg') # Needed when running on scinet
 import matplotlib.pyplot as plt
-from FRBEvent import FRBEvent
+from frb import FRB
 
-class Pulsar(FRBEvent):
+class Pulsar(FRB):
     def __init__(self, t_ref=0*u.ms, f_ref=0.6*u.GHz, NFREQ=1024, NTIME=1000,
                  delta_t=3.2*u.ms, dm=(2.5, 35)*(u.pc/u.cm**3),
                  fluence=(2.5, 15)*(u.Jy*u.ms), freq=(0.8, 0.4)*u.GHz,
@@ -36,7 +36,7 @@ class Pulsar(FRBEvent):
         self.ntime_per_period = (NTIME // self.n_periods) + 1
         max_period_size = self.max_size // self.n_periods + 1
 
-        # use FRBEvent.make_background to initialize NTIME NFREQ and background
+        # use FRB.make_background to initialize NTIME NFREQ and background
         super(Pulsar, self).make_background(background, NFREQ, NTIME)
 
         # Save background and NTIME to ensure not overwritten by super
@@ -46,7 +46,7 @@ class Pulsar(FRBEvent):
         # Create the background of a single pulse
         bg = np.zeros((self.NFREQ, self.ntime_per_period), dtype=float)
 
-        # Call FRBEvent __init__ to generate a single period of the pulsar
+        # Call FRB __init__ to generate a single period of the pulsar
         super(Pulsar, self).__init__(t_ref=t_ref, f_ref=f_ref,
                                      NFREQ=self.NFREQ, delta_t=self.delta_t,
                                      NTIME=self.ntime_per_period, freq=freq,

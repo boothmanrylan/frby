@@ -16,12 +16,11 @@ from tools import read_vdif
 
 k_dm = 4.148808e6 * (u.MHz**2 * u.cm**3 * u.ms / u.pc)
 
-class FRBEvent(object):
+class FRB(object):
     """
-    Class to generate a realistic fast radio burst and add the event to data,
-    including scintillation, temporal scattering, spectral index variation, and
-    DM smearing .This class was expanded from real-time FRB injection in
-    Kiyoshi Masui's https://github.com/kiyo-masui/burst\_search
+    Generate a simulated fast radio burst.
+    Based on https://github.com/liamconnor/single_pulse_ml which is in turn
+    based on https://github.com/kiyo-masui/burst_search
     """
     def __init__(self, t_ref=0*u.ms, f_ref=0.6*u.GHz, NFREQ=1024, NTIME=2**15,
                  delta_t=0.16*u.ms, dm=(100, 500)*(u.pc/u.cm**3),
@@ -348,7 +347,7 @@ if __name__ == "__main__":
     #files = [d + str(x) + '.vdif' for x in range(10)]
     #d = '/home/rylan/dunlap/data/vdif/00001'
     #files.extend([d + str(x) + '.vdif' for x in range(16)[10:]])
-    event = FRBEvent(background=files, dm=250*u.pc/u.cm**3)
+    event = FRB(background=files, dm=250*u.pc/u.cm**3)
     print(event)
     event.plot()
 
