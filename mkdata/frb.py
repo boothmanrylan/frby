@@ -49,7 +49,6 @@ class FRB(object):
         self.t_ref = t_ref.to(u.ms)
         self.scintillate = scintillate
         self.bandwidth = (max(freq) - min(freq)).to(u.MHz)
-        self.output_file = None
         self.max_size = max_size
 
         if f_ref is None:
@@ -103,6 +102,7 @@ class FRB(object):
 
         self.freq = np.linspace(freq[0], freq[1], self.NFREQ).to(u.MHz)
         self.simulated_frb = self.simulate_frb()
+        self.attributes = self.get_parameters()
 
     def __repr__(self):
         repr = str(self.get_parameters())
@@ -117,7 +117,7 @@ class FRB(object):
              self.background = data
              self.NFREQ = self.background.shape[0]
              self.NTIME = self.background.shape[1]
-             self.input = files
+             self.files = files
              self.rate = rate
              self.delta_t = (1/rate).to(u.ms)
         except TypeError as E: # background isn't a file or the file doesn't exist
@@ -125,12 +125,12 @@ class FRB(object):
                 self.background = background
                 self.NFREQ = background.shape[0]
                 self.NTIME = background.shape[1]
-                self.input = 'ndarray'
+                self.files = None
             except AttributeError: # background isn't an array
                 self.background = np.random.normal(0, 1, size=(NFREQ, NTIME))
                 self.NFREQ = NFREQ
                 self.NTIME = NTIME
-                self.input = 'None'
+                self.files = None
             if self.NTIME > self.max_size: # Reduce detail in time
                 width = int(self.max_size)
                 while self.NTIME % width != 0:
@@ -306,15 +306,12 @@ class FRB(object):
 
         Returns: None
         """
-        # TODO: update to save to hdf5, this may be problematic as it would
-        # appear that h5py on niagara doesn't support parallel read/write to
-        # the same hdf5 file
+        # TODO: update to save to hdf5
         output_dir = '/'.join(output.split('/')[:-1])
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
         np.save(output, self.simulated_frb)
-        self.output_file = output
 
     def get_parameters(self):
         """
@@ -327,7 +324,7 @@ class FRB(object):
                   'dm': self.dm, 'fluence': self.fluence, 'width': self.width,
                   'spec_ind': self.spec_ind, 'scat_factor': self.scat_factor,
                   'max_freq': max(self.freq), 'min_freq': min(self.freq),
-                  'Name': self.output_file, 'Input': self.input, 'FRB': True}
+                  'files': self.files, 'class': 'frb'}
         return params
 
     def get_headers(self):

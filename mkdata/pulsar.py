@@ -42,6 +42,9 @@ class Pulsar(FRB):
         # Save background and NTIME to ensure not overwritten by super
         temp_bg = self.background
         temp_NTIME = self.NTIME
+        temp_delta_t = self.delta_t
+        temp_rate = self.rate
+        temp_files = self.files
 
         # Create the background of a single pulse
         bg = np.zeros((self.NFREQ, self.ntime_per_period), dtype=float)
@@ -57,6 +60,9 @@ class Pulsar(FRB):
         # Restore background and NTIME from before the call to super
         self.background = temp_bg
         self.NTIME = temp_NTIME
+        self.delta_t = temp_delta_t
+        self.rate = temp_rate
+        self.files = temp_files
 
         # Combine the single pulse n_period times to create the pulsar
         foreground = np.hstack([self.simulated_frb] * self.n_periods)
@@ -64,6 +70,11 @@ class Pulsar(FRB):
 
         # Inject the pulsar into the background rfi
         self.pulsar = self.background + foreground
+
+        self.attributes = super(Pulsar, self).get_parameters()
+        self.attributes['class'] = pulsar
+        self.attributes['n_periods'] = self.n_periods
+        self.attributes['period'] = self.period
 
     def plot(self, save=None):
         plt.imshow(self.pulsar, interpolation='nearest', aspect='auto')
