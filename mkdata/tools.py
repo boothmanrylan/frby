@@ -37,27 +37,35 @@ def read_vdif(vdif_files, rate_in, rate_out=1e-3*u.MHz):
         # Determine the number of samples and the sample rate
         nfreq = fh.shape[-1]
         n_samples_in = fh.shape[0]
-        n_samples_out = int(((n_samples_in/rate_in)*rate_out).value)
-        n_samples_in_trunc = (n_samples_in//n_samples_out)*n_samples_out
+
+        # How many samples will be left after changing the sample rate
+        n_samples_out = int(((n_samples_in/rate_in) * rate_out).value)
+
+        # Truncate the # of input samples so that the number of input samples
+        # can be divded evenly by the number of output samples
+        n_samples_in_trunc = (n_samples_in // n_samples_out) * n_samples_out
+
+        # How many samples are in each chunk
         chunk_width = n_samples_in_trunc // n_samples_out
+
+        # The true rate out, the desired rate will not be acieved perfectly
         rate_out = (n_samples_out * rate_in) / n_samples_in
-        n_chunks = n_samples_in_trunc // chunk_width
 
         # Read chunks in groups of chunks no larger than 2**15 samples, to
         # reduce the number of reads necessary to read all the data
         max_samples_per_read = 2**15
-        chunks_per_read = max_samples_per_read//chunk_width
-        n_reads = n_chunks//chunks_per_read
+        chunks_per_read = max_samples_per_read // chunk_width
+        n_reads = n_samples_out // chunks_per_read
+
+        # The true number of samples after changinf sample rate, will bot be
+        # perfectly n_samples_out because everything needs to divide nicely
+        true_samples_out = n_reads * chunks_per_read
 
         # Read the file in chunks, reducing each chunk after reading
-        complete_data = np.zeros((nfreq, n_samples_out))
+        complete_data = np.zeros((nfreq, true_samples_out))
         for i in range(n_reads):
             # Ensure enough data is left to do a complete read
-            if chunk_width * chunks_per_read < n_samples_in_trunc:
-                data = fh.read(chunk_width * chunks_per_read)
-            else:
-                # TODO: find method to read remaining data
-                break
+            data = fh.read(chunk_width * chunks_per_read)
 
             # Get the power from data
             data = (np.abs(data) ** 2).mean(1)
