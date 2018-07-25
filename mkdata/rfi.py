@@ -43,10 +43,13 @@ class RFI(object):
         self.frequency_array = np.vstack([frequency] * ntime).T
         self.time_array = np.vstack([time] * nfreq)
         self.rfi = background
-        self.attributes = {'min_freq': min_freq, 'max_freq': max_freq,
-                           'frequency_units': min_freq.unit, 'class': 'rfi',
-                           'functions': [], 'time_units': duration.unit,
-                           'duration': duration}
+        self.base_rfi = np.copy(background)
+        attributes = {'min_freq': min_freq, 'max_freq': max_freq,
+                      'frequency_units': str(min_freq.unit), 'class': 'rfi',
+                      'functions': [], 'time_units': str(duration.unit),
+                      'duration': duration}
+        self.attributes = attributes
+        self.base_attributes = dict(attributes)
 
     def apply_function(self, func, name=None, input='value', freq_range=None,
                        time_range=None, **params):
@@ -95,20 +98,29 @@ class RFI(object):
         else:
             freq_coefs = np.zeros_like(self.rfi)
             for start, stop in freq_range:
-                freq_coefs[start:stop, :] = 1
+                freq_coefs[int(start):int(stop), :] = 1
         if time_range is None:
             time_coefs = np.ones_like(self.rfi)
         else:
             time_coefs = np.zeros_like(self.rfi)
             for start, stop in time_range:
-                time_coefs[:, start:stop] = 1
+                time_coefs[:, int(start):int(stop)] = 1
         coefs = (time_coefs * freq_coefs).astype(bool)
         self.rfi = func(x, self.rfi, coefs, **params)
-        self.attributes['functions'].append(name)
+        self.attributes['functions'] = self.attributes['functions'][:] + [name]
         params_list = ['{}-{}'.format(name, p) for p in params.keys()]
         self.attributes[name] = params_list
         for idx, key in enumerate(params.keys()):
             self.attributes[params_list[idx]] = params[key]
+
+    def reset(self):
+        """
+        Removes the effects of any functions applied to the base rfi. Reverts
+        self.attributes and self.rfi to how the were immediately after
+        initialization.
+        """
+        self.rfi = np.copy(self.base_rfi)
+        self.attributes = dict(self.base_attributes)
 
     def plot(self):
         """
@@ -173,8 +185,8 @@ class TelescopeRFI(RFI):
     """
     Creates an RFI object where the background is data taken from a telescope.
     """
-    def __init__(self, files, rate_in, min_freq, max_freq,
-                 rate_out=1e-3*u.MHz):
+    def __init__(self, files, rate_in=(400/1024)*u.MHz, min_freq=400*u.MHz,
+                 max_freq=800*u.MHz, rate_out=1e-3*u.MHz):
         data, file_names, rate_out = read_vdif(files, rate_in, rate_out)
         duration = (data.shape[1] / rate_out).to(u.ms)
         super(TelescopeRFI, self).__init__(data, min_freq, max_freq, duration)
@@ -184,12 +196,14 @@ class TelescopeRFI(RFI):
         self.attributes['telescope_rate_out'] = rate_out
 
 
-def fourier_lowpass_filter(x, rfi, boolean, cutoff):
+def fourier_lowpass_filter(x, rfi, boolean, cutoff=None):
     """
     fourier transforms data, sets all values to 0 that are higher than cutoff,
     then returns the inverse fourier transform of that
     """
     fourier_data = np.fft.fft(x)
+    if cutoff is None:
+        cutoff = np.sqrt(np.abs(np.mean(fourier_data)))
     filtered_data = np.where(fourier_data < cutoff, fourier_data, 0)
     real_data = np.real(np.fft.ifft(filtered_data))
     rfi = np.where(boolean, real_data, rfi)
@@ -201,8 +215,14 @@ def butterworth_lowpass_filter(x, rfi, boolean, cutoff, sr, N):
     Applies an Nth order butterworth lowpass filter to data, with a cutoff
     frequency of cutoff and a sample rate of sr.
     """
+    if cutoff is None:
+        cutoff = np.sqrt(np.abs(np.mean(x)))
     nyquist = 0.5 * sr
     cutoff /= nyquist
+    if cutoff <= 0:
+        cutoff = 0.01
+    elif cutoff >= 1.0:
+        cutoff = 0.999
     b, a = signal.butter(N, cutoff)
     filtered_data = signal.lfilter(b, a, x)
     rfi = np.where(boolean, filtered_data, rfi)
@@ -264,6 +284,7 @@ def sinusoidal_sum(x, rfi, boolean, n=2, amp=1, freq=0.5, phase=0, add=True):
     """
     Applies a function that is the sum of n rand_sinusoid functions
     """
+    n = int(n)
     def sum(x, f1, f2):
         return f1(x) + f2(x)
     def func(x):
@@ -280,6 +301,7 @@ def sinusoidal_product(x, rfi, boolean, n=2, amp=1, freq=0.5, phase=0,
     """
     Applies a function that is the product of n rand_sinusoid functions
     """
+    n = int(n)
     def product(x, f1, f2):
         return f1(x) * f2(x)
     def func(x):
@@ -290,15 +312,15 @@ def sinusoidal_product(x, rfi, boolean, n=2, amp=1, freq=0.5, phase=0,
     return output(x, rfi, boolean, add)
 
 
-def changing_sinusoid(x, rfi, boolean, func=lambda x: 1/np.exp(x), b=100,
-                      amp=1, freq=0.5, phase=0, add=True):
+def changing_sinusoid(x, rfi, boolean, func=lambda x: np.exp(x ** 0.01), amp=1,
+                      freq=0.5, phase=0, add=True):
     """
     Applies a function that is a random sinusoid that changes over time. Where
-    f(x) is the randomized sinusoid, and g(x) is func the output is g(f(x)).
+    f(x) is the randomized sinusoid, and g(x) is func the output is g(x) * f(x)
     This is either multiplied or added to x, depending on the value of add.
     """
     f1 = rand_sinusoid(amp, freq, phase)
-    x = func(f1(x))
+    x = f1(x) * func(x)
     return output(x, rfi, boolean, add)
 
 
@@ -306,6 +328,9 @@ def patches(data, rfi, boolean, N=5, min_size=2, max_size=20, patch_size=2000,):
     """
     Creates N random "patches" at random locations in data
     """
+    # Ensure that #'s that must be ints are ints
+    N = int(N)
+    patch_size = int(patch_size)
     xs = np.random.uniform(0, data.shape[0], size=N)
     ys = np.random.uniform(0, data.shape[1], size=N)
     rs = np.random.uniform(min_size, max_size, size=N)
