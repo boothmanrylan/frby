@@ -101,7 +101,7 @@ class FRB(object):
         self.scat_factor = min(1, self.scat_factor + 1e-18) # quick bug fix hack
 
         self.freq = np.linspace(freq[0], freq[1], self.NFREQ).to(u.MHz)
-        self.simulated_frb = self.simulate_frb()
+        self.frb = self.simulate_frb()
         self.attributes = self.get_parameters()
 
     def __repr__(self):
@@ -125,12 +125,12 @@ class FRB(object):
                 self.background = background
                 self.NFREQ = background.shape[0]
                 self.NTIME = background.shape[1]
-                self.files = None
+                self.files = ''
             except AttributeError: # background isn't an array
                 self.background = np.random.normal(0, 1, size=(NFREQ, NTIME))
                 self.NFREQ = NFREQ
                 self.NTIME = NTIME
-                self.files = None
+                self.files = ''
             if self.NTIME > self.max_size: # Reduce detail in time
                 width = int(self.max_size)
                 while self.NTIME % width != 0:
@@ -282,7 +282,7 @@ class FRB(object):
         axis[0].set_yticklabels(ylabels)
         axis[0].set_xticks(xticks)
         axis[0].set_xticklabels(xlabels)
-        axis[1].imshow(self.simulated_frb, vmin=-1.0, vmax=1.0, interpolation="nearest",
+        axis[1].imshow(self.frb, vmin=-1.0, vmax=1.0, interpolation="nearest",
                    aspect="auto")
         axis[1].set_title("Simulated FRB")
         axis[1].set_xlabel("Time (ms)")
@@ -311,7 +311,7 @@ class FRB(object):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        np.save(output, self.simulated_frb)
+        np.save(output, self.frb)
 
     def get_parameters(self):
         """
