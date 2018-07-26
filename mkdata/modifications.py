@@ -27,8 +27,9 @@ single_mods = [[{'func': fourier_lowpass_filter,
                   'input': 'freq',
                   'freq_range': None,
                   'time_range': None,
-                  'params': {'alpha': np.random.uniform(1, 4),
-                             'beta': np.random.uniform(1, 6)
+                  'params': {'offset': 400,
+                             'coef': np.random.uniform(1, 4),
+                             'scale': np.random.uniform(1, 4)
                              }
                  }],
                 [{'func': patches,
@@ -61,7 +62,7 @@ single_mods = [[{'func': fourier_lowpass_filter,
                   'params': {'N': np.random.uniform(75, 125),
                              'min_size': np.random.uniform(1, 3),
                              'max_size': np.random.uniform(5, 10),
-                             'patch_size': np.random.uniform(3500, 4500)
+                             'patch_size': np.random.uniform(1500, 2500)
                              }
                   }],
                 [{'func': patches,
@@ -72,7 +73,7 @@ single_mods = [[{'func': fourier_lowpass_filter,
                   'params': {'N': np.random.uniform(1, 4),
                              'min_size': np.random.uniform(1, 3),
                              'max_size': np.random.uniform(4, 8),
-                             'patch_size': np.random.uniform(7500, 8500)
+                             'patch_size': np.random.uniform(8500, 9500)
                              }
                   }],
                 [{'func': sinusoidal_sum,
