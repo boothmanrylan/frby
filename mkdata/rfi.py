@@ -164,6 +164,7 @@ class PoissonRFI(RFI):
     def __init__(self, shape=(1024, 2**15), min_freq=400*u.MHz,
                  max_freq=800*u.MHz, duration=1000*u.ms, lam=1):
         bg = np.random.poisson(lam=lam, size=shape)
+        bg = bg.astype(float)
         super(PoissonRFI, self).__init__(bg, min_freq, max_freq, duration)
         self.attributes['type'] = 'poisson'
         self.attributes['poisson_lam'] = lam
