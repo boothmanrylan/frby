@@ -215,10 +215,15 @@ def butterworth_lowpass_filter(x, rfi, boolean, cutoff, sr, N):
     Applies an Nth order butterworth lowpass filter to data, with a cutoff
     frequency of cutoff and a sample rate of sr.
     """
+    N = int(N)
     if cutoff is None:
         cutoff = np.sqrt(np.abs(np.mean(x)))
     nyquist = 0.5 * sr
     cutoff /= nyquist
+    try:
+        cutoff = cutoff.value
+    except AttributeError:
+        pass
     if cutoff <= 0:
         cutoff = 0.01
     elif cutoff >= 1.0:
@@ -226,21 +231,6 @@ def butterworth_lowpass_filter(x, rfi, boolean, cutoff, sr, N):
     b, a = signal.butter(N, cutoff)
     filtered_data = signal.lfilter(b, a, x)
     rfi = np.where(boolean, filtered_data, rfi)
-    return rfi
-
-
-
-def one_over_f(x, rfi, boolean, alpha, beta):
-    """
-    Returns the function f(x) = beta / x**alpha
-    """
-    # TODO: implement the more complicated 1/f rfi outlined in this paper:
-    # https://arxiv.org/pdf/1711.07843.pdf
-    def func(x):
-        x = np.where(x != 0, x, 1e-9)
-        return beta / (x ** alpha)
-    x = func(x)
-    rfi = np.where(boolean, x, rfi)
     return rfi
 
 
@@ -324,6 +314,16 @@ def changing_sinusoid(x, rfi, boolean, func=lambda x: np.exp(x ** 0.01), amp=1,
     return output(x, rfi, boolean, add)
 
 
+def one_over_f(x, rfi, boolean, coef=2, offset=400, scale=2, add=True):
+    """
+    Applies the function f(x) = beta / x**alpha
+    """
+    # TODO: implement the more complicated 1/f rfi outlined in this paper:
+    # https://arxiv.org/pdf/1711.07843.pdf
+    x = scale * np.exp((-coef * (x - offset))/np.mean(x - offset))
+    return output(x, rfi, boolean, add)
+
+
 def patches(data, rfi, boolean, N=5, min_size=2, max_size=20, patch_size=2000,):
     """
     Creates N random "patches" at random locations in data
@@ -354,14 +354,14 @@ def patches(data, rfi, boolean, N=5, min_size=2, max_size=20, patch_size=2000,):
     return rfi
 
 
-def masked_delta(data, rfi, boolean, width=50, height=50, loc=100, rand=1):
+def delta(data, rfi, boolean, width=50, height=50, loc=100, rand=1, mask=False):
     def delta(x, width, height, loc):
         loc = np.random.normal(loc, rand, size=x.shape[0])
         loc = np.vstack([loc] * x.shape[1]).T
         A = height / (np.abs(width) * np.sqrt(np.pi))
         B = np.exp(-((x - loc) / width) ** 2)
         return A * B
-    def mask(x, a1, a2):
+    def mask_func(x, a1, a2):
         x = np.where(x < a1 - 1, 1, x)
 
         b1 = np.greater_equal(x, a1 - 1)
@@ -380,8 +380,11 @@ def masked_delta(data, rfi, boolean, width=50, height=50, loc=100, rand=1):
         return x
     a1 = 0.9999 * loc
     a2 = 1.0001 * loc
-    data = delta(data, width, height, loc) * mask(data, a1, a2)
-    rfi = np.where(boolean, data, rfi)
+    if mask:
+        data = delta(data, width, height, loc) * mask_func(data, a1, a2)
+    else:
+        data = delta(data, width, height, loc)
+    rfi = np.where(boolean, data + rfi, rfi)
     return rfi
 
 
