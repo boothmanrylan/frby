@@ -16,30 +16,23 @@ def parse_fn(example):
     shape = tf.stack([height, width])
 
     data = tf.decode_raw(parsed['data'], tf.float64)
-    #data = tf.reshape(data, shape)
-    data.set_shape(shape)
+    data = tf.reshape(data, shape)
     return data, label
 
-def input_fn(paths, take, batch_size):
-    train_datasets = []
-    test_datasets = []
-    for path in paths:
-        dataset = tf.data.Dataset.list_files(path)
-        dataset = tf.data.TFRecordDataset(dataset)
-        train = dataset.take(take)
-        test = dataset.skip(take).take(take//2)
-        train_datasets.append(train.map(parse_fn))
-        test_datasets.append(test.map(parse_fn))
-    train = train_datasets[0]
-    test = test_datasets[0]
-    for d in train_datasets[1:]:
-        train = train.concatenate(d)
-    for d in test_datasets[1:]:
-        test = test.concatenate(d)
-    train = train.shuffle(100)
+def input_fn(path, train_size, test_size, batch_size):
+    files = tf.data.Dataset.list_files(path)
+    d = tf.data.TFRecordDataset(files)
+    d = d.map(parse_fn)
+    d = d.shuffle(100)
+    train = d.take(train_size)
+    test = d.skip(train_size).take(test_size)
     train = train.apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
-    test = test.shuffle(100)
     test = test.apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
+    print(train.output_shapes)
+    print(train.output_types)
+    print(test.output_shapes)
+    print(test.output_types)
+    exit()
     return train, test
 
 if __name__ == '__main__':
@@ -47,8 +40,11 @@ if __name__ == '__main__':
 
     path = '/scratch/r/rhlozek/rylan/tfrecords/'
     paths = [path + x for x in ['rfi*', 'psr*', 'frb*']]
-    take = 10
-    train_dataset, test_dataset = input_fn(paths, take, 3)
+    train_size = 20
+    test_size = 10
+    batch_size = 3
+    train_dataset, test_dataset = input_fn(paths, train_size, test_size,
+                                           batch_size)
     shape = train_dataset.output_shapes[0]
     t1 = tf.Print(shape, [shape])
     t2 = t1 + 1
