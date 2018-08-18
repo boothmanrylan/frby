@@ -16,132 +16,128 @@ import tensorflow as tf
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
-def get_model_fn(num_gpus, variable_strategy, num_workers):
-    def _resnet_model_fn(features, labels, mode, params):
-        is_training = (mode == tf.estimator.ModeKeys.TRAIN)
-        weight_decay = params.weight_decay
-        momentum = params.momentum
+def model_fn(features, labels, mode, params, config):
+    is_training = (mode == tf.estimator.ModeKeys.TRAIN)
+    weight_decay = params.weight_decay
+    momentum = params.momentum
+    num_workers = config.num_worker_replicas or 1
 
-        tower_features = features
-        tower_labels = labels
-        tower_losses = []
-        tower_gradvars = []
-        tower_preds = []
+    tower_features = features
+    tower_labels = labels
+    tower_losses = []
+    tower_gradvars = []
+    tower_preds = []
 
-        data_format = params.data_format
-        if not data_format:
-            if num_gpus == 0:
-                data_format = 'channels_last'
-            else:
-                data_format = 'channels_first'
-
-        if num_gpus == 0:
-            num_devices = 1
-            device_type = 'cpu'
+    data_format = params.data_format
+    if not data_format:
+        if params.num_gpus == 0:
+            data_format = 'channels_last'
         else:
-            num_devices = num_gpus
-            device_type = 'gpu'
+            data_format = 'channels_first'
 
-        for i in range(num_devices):
-            worker_device = '/{}:{}'.format(device_type, i)
-            if variable_strategy == 'CPU':
-                device_setter = utils.local_device_setter(
-                        worker_device=worker_device)
-            elif variable_strategy == 'GPU':
-                device_setter = utils.local_device_setter(
-                    ps_device_type='gpu',
-                    worker_device=worker_device,
-                    ps_strategy=tf.contrib.training.GreedyLoadBalancingStrategy(
-                        num_gpus, tf.contrib.training.byte_size_load_fn))
-            with tf.variable_scope('resnet', reuse=bool(i != 0)):
-                with tf.name_scope('tower_%d' % i) as name_scope:
-                    with tf.device(device_setter):
-                        loss, gradvars, preds = _tower_fn(
-                                is_training, weight_decay, tower_features[i],
-                                tower_labels[i], data_format,
-                                params.num_layers, params.batch_norm_decay,
-                                params.batch_norm_epsilon)
-                        tower_losses.append(loss)
-                        tower_gradvars.append(gradvars)
-                        tower_preds.append(preds)
-                        if i == 0:
-                            update_ops = tf.get_collection(
-                                    tf.GraphKeys.UPDATE_OPS, name_scope)
-        gradvars = []
-        with tf.name_scope('gradient_averaging'):
-            all_grads = {}
-            for grad, var in itertools.chain(*tower_gradvars):
-                if grad is not None:
-                    all_grads.setdefault(var, []).append(grad)
-            for var, grads in six.iteritems(all_grads):
-                with tf.device(var.device):
-                    if len(grads) == 1:
-                        avg_grad = grads[0]
-                    else:
-                        avg_grad = tf.multiply(tf.add_n(grads),
-                                1. / len(grads))
-                gradvars.append((avg_grad, var))
+    if params.num_gpus == 0:
+        num_devices = 1
+        device_type = 'cpu'
+    else:
+        num_devices = params.num_gpus
+        device_type = 'gpu'
 
-        if variable_strategy == 'GPU':
-            consolidation_device = '/gpu:0'
-        else:
-            consolidation_device = '/cpu:0'
-        with tf.device(consolidation_device):
-            num_batches_per_epoch = (Dataset.examples_per_epoch(True) //
-                (params.train_batch_size * num_workers))
-            boundaries = list(num_batches_per_epoch *
-                                np.array([82, 23, 300], dtype=np.int64))
-            staged_lr = list(params.learning_rate *
-                                np.array([1, .1, .01, .002], dtype=np.int64))
+    for i in range(num_devices):
+        worker_device = '/{}:{}'.format(device_type, i)
+        if params.variable_strategy == 'CPU':
+            device_setter = utils.local_device_setter(
+                    worker_device=worker_device)
+        elif params.variable_strategy == 'GPU':
+            device_setter = utils.local_device_setter(
+                ps_device_type='gpu',
+                worker_device=worker_device,
+                ps_strategy=tf.contrib.training.GreedyLoadBalancingStrategy(
+                    params.num_gpus, tf.contrib.training.byte_size_load_fn))
+        with tf.variable_scope('resnet', reuse=bool(i != 0)):
+            with tf.name_scope('tower_%d' % i) as name_scope:
+                with tf.device(device_setter):
+                    loss, gradvars, preds = _tower_fn(
+                            is_training, weight_decay, tower_features[i],
+                            tower_labels[i], data_format,
+                            params.num_layers, params.batch_norm_decay,
+                            params.batch_norm_epsilon)
+                    tower_losses.append(loss)
+                    tower_gradvars.append(gradvars)
+                    tower_preds.append(preds)
+                    if i == 0:
+                        update_ops = tf.get_collection(
+                                tf.GraphKeys.UPDATE_OPS, name_scope)
+    gradvars = []
+    with tf.name_scope('gradient_averaging'):
+        all_grads = {}
+        for grad, var in itertools.chain(*tower_gradvars):
+            if grad is not None:
+                all_grads.setdefault(var, []).append(grad)
+        for var, grads in six.iteritems(all_grads):
+            with tf.device(var.device):
+                if len(grads) == 1:
+                    avg_grad = grads[0]
+                else:
+                    avg_grad = tf.multiply(tf.add_n(grads),
+                            1. / len(grads))
+            gradvars.append((avg_grad, var))
 
-            learning_rate = tf.train.piecewise_constant(
-                    tf.train.get_global_step(), boundaries, staged_lr)
+    if params.variable_strategy == 'GPU':
+        consolidation_device = '/gpu:0'
+    else:
+        consolidation_device = '/cpu:0'
+    with tf.device(consolidation_device):
+        num_batches_per_epoch = (Dataset.examples_per_epoch(True) //
+            (params.train_batch_size * num_workers))
+        boundaries = list(num_batches_per_epoch *
+                            np.array([82, 23, 300], dtype=np.int64))
+        staged_lr = list(params.learning_rate *
+                            np.array([1, .1, .01, .002], dtype=np.int64))
 
-            loss = tf.reduce_mean(tower_losses, name='loss')
+        learning_rate = tf.train.piecewise_constant(
+                tf.train.get_global_step(), boundaries, staged_lr)
 
-            examples_sec_hook = utils.ExamplesPerSecondHook(
-                    params.train_batch_size, every_n_steps=10)
+        loss = tf.reduce_mean(tower_losses, name='loss')
 
-            tensors_to_log = {'learning_rate': learning_rate, 'loss': loss}
-            logging_hook = tf.train.LoggingTensorHook(
-                    tensors=tensors_to_log, every_n_iter=100)
+        examples_sec_hook = utils.ExamplesPerSecondHook(
+                params.train_batch_size, every_n_steps=10)
 
-            train_hooks = [logging_hook, examples_sec_hook]
+        tensors_to_log = {'learning_rate': learning_rate, 'loss': loss}
+        logging_hook = tf.train.LoggingTensorHook(
+                tensors=tensors_to_log, every_n_iter=100)
 
-            optimizer = tf.train.MomentumOptimizer(
-                    learning_rate=learning_rate, momentum=momentum)
+        train_hooks = [logging_hook, examples_sec_hook]
 
-            if params.sync:
-                optimizer = tf.train.SyncReplicasOptimizer(optimizer,
-                        replicas_to_aggregate=num_workers)
-                sync_replicas_hook = optimizer.make_session_run_hook(
-                        params.is_chief)
-                train_hooks.append(sync_replicas_hook)
+        optimizer = tf.train.MomentumOptimizer(
+                learning_rate=learning_rate, momentum=momentum)
 
-            train_op = [optimizer.apply_gradients(gradvars,
-                global_step=tf.train.get_global_step())]
-            train_op.extend(update_ops)
-            train_op = tf.group(*train_op)
+        if params.sync:
+            optimizer = tf.train.SyncReplicasOptimizer(optimizer,
+                    replicas_to_aggregate=num_workers)
+            sync_replicas_hook = optimizer.make_session_run_hook(
+                    params.is_chief)
+            train_hooks.append(sync_replicas_hook)
 
-            predictions = {
-                'classes':
-                    tf.concat([p['classes'] for p in tower_preds], axis=0),
-                'probabilities':
-                    tf.concat([p['probabilities'] for p in tower_preds], axis=0)
-                    }
-            stacked_labels = tf.concat(labels, axis=0)
-            metrics = {
-                    'accuracy': tf.metrics.accuracy(stacked_labels,
-                        predictions['classes'])
-                    }
-        return tf.estimator.EstimatorSpec(
-                mode=mode,
-                predictions=predictions,
-                loss=loss,
-                train_op=train_op,
-                training_hooks=train_hooks,
-                eval_metric_ops=metrics)
-    return _resnet_model_fn
+        train_op = [optimizer.apply_gradients(gradvars,
+            global_step=tf.train.get_global_step())]
+        train_op.extend(update_ops)
+        train_op = tf.group(*train_op)
+
+        predictions = {
+            'classes':
+                tf.concat([p['classes'] for p in tower_preds], axis=0),
+            'probabilities':
+                tf.concat([p['probabilities'] for p in tower_preds], axis=0)
+                }
+        stacked_labels = tf.concat(labels, axis=0)
+        metrics = {
+                'accuracy': tf.metrics.accuracy(stacked_labels,
+                    predictions['classes'])
+                }
+    return tf.estimator.EstimatorSpec(mode=mode, predictions=predictions,
+                                      loss=loss, train_op=train_op,
+                                      training_hooks=train_hooks,
+                                      eval_metric_ops=metrics)
 
 def _tower_fn(is_training, weight_decay, feature, label, data_format,
               num_layers, batch_norm_decay, batch_norm_epsilon):
@@ -186,64 +182,38 @@ def input_fn(file_pattern, training, num_shards, batch_size):
 
         return feature_shards, label_shards
 
-def get_experiment_fn(train_pattern, eval_pattern, num_gpus, variable_strategy):
-    def _experiment_fn(run_config, hparams):
-        train_input_fn = functools.partial(
-                input_fn,
-                train_pattern,
-                training=True,
-                num_shards=num_gpus,
-                batch_size=hparams.train_batch_size)
 
-        eval_input_fn = functools.partial(
-                input_fn,
-                eval_pattern,
-                training=False,
-                num_shards=num_gpus,
-                batch_size=hparams.eval_batch_size)
-
-        num_eval_examples = Dataset.examples_per_epoch(False)
-
-        if num_eval_examples % hparams.eval_batch_size != 0:
-            msg = 'validation set size must be multiple of eval_batch_size'
-            raise ValueError(msg)
-
-        train_steps = hparams.train_steps
-        eval_steps = num_eval_examples // hparams.eval_batch_size
-
-        classifier = tf.estimator.Estimator(
-                model_fn=get_model_fn(num_gpus, variable_strategy,
-                    run_config.num_worker_replicas or 1),
-                config=run_config,
-                params=hparams)
-
-        return tf.contrib.learn.Experiment(
-                classifier,
-                train_input_fn=train_input_fn,
-                eval_input_fn=eval_input_fn,
-                train_steps=train_steps,
-                eval_steps=eval_steps)
-    return _experiment_fn
-
-def main(job_dir, train_pattern, eval_pattern, num_gpus, variable_strategy,
+def main(job_dir, train_pattern, eval_pattern,
          log_device_placement, num_intra_threads, **hparams):
     os.environ['TF_SYNC_FINISH'] = '0'
     os.environ['TF_ENABLE_WINOGRAD_NOFUSED'] = '1'
 
-    sess_config = tf.ConfigProto(
-            allow_soft_placement=True,
-            log_device_placement=log_device_placement,
-            intra_op_parallelism_threads=num_intra_threads,
-            gpu_options=tf.GPUOptions(force_gpu_compatible=True))
+    sess_config = tf.ConfigProto(allow_soft_placement=True,
+                        log_device_placement=log_device_placement,
+                        intra_op_parallelism_threads=num_intra_threads,
+                        gpu_options=tf.GPUOptions(force_gpu_compatible=True))
 
-    config = tf.contrib.learn.RunConfig(session_config=sess_config,
+    config = tf.estimator.RunConfig(session_config=sess_config,
                                     model_dir=job_dir)
-    tf.contrib.learn.learn_runner.run(
-            get_experiment_fn(train_pattern, eval_pattern, num_gpus,
-                              variable_strategy),
-            run_config=config,
-            hparams=tf.contrib.training.HParams(is_chief=config.is_chief,
-                                                **hparams))
+
+    hparams = tf.contrib.training.HParams(is_chief=config.is_chief, **hparams)
+
+    train_input_fn = functools.partial(input_fn, train_pattern,
+                                       training=True,
+                                       num_shards=hparams.num_gpus,
+                                       batch_size=hparams.train_batch_size)
+    eval_input_fn = functools.partial(input_fn, eval_pattern,
+                                      training=False,
+                                      num_shards=hparams.num_gpus,
+                                      batch_size=hparams.eval_batch_size)
+    estimator = tf.estimator.Estimator(model_fn, model_dir=job_dir,
+                                       config=config, params=hparams)
+    train_spec = tf.estimator.TrainSpec(train_input_fn,
+                                        max_steps=hparams.train_steps)
+    eval_spec = tf.estimator.EvalSpec(eval_input_fn,
+                                      steps=hparams.eval_steps)
+    output = tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
+    print(output)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -283,6 +253,11 @@ if __name__ == '__main__':
             type=int,
             default=80000,
             help='The number of steps to use for training.')
+    parser.add_argument(
+            '--eval-steps',
+            type=int,
+            default=800,
+            help='The number of steps to use when evaluating')
     parser.add_argument(
             '--train-batch-size',
             type=int,

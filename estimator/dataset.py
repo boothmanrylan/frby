@@ -27,7 +27,6 @@ class Dataset(object):
         data = tf.decode_raw(features['data'], tf.float32)
 
         data.set_shape(definitions.height * definitions.width)
-        print(data.get_shape())
 
         data = tf.cast(tf.reshape(data, shape), tf.float32)
 
