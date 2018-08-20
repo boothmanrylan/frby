@@ -24,19 +24,18 @@ def _int64_feature(value):
 def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
+def _floats_feature(value):
+    return tf.train.Feature(float_list=tf.train.FloatList(value=value))
+
 def write(path, data, labels):
     assert(data.shape[0] == labels.shape[0])
     n_samples = data.shape[0]
     count = 1
     with tf.python_io.TFRecordWriter(path) as tfw:
         for idx in range(n_samples):
-            d = np.load(data[idx])
-            height = d.shape[0]
-            width = d.shape[1]
+            d = np.load(data[idx]).astype('float32')
             d = d.tostring()
-            feature = {'height': _int64_feature(height),
-                       'width': _int64_feature(width),
-                       'label': _int64_feature(labels[idx]),
+            feature = {'label': _int64_feature(labels[idx]),
                        'data': _bytes_feature(d)}
             features = tf.train.Features(feature=feature)
             example = tf.train.Example(features=features)
@@ -72,14 +71,17 @@ def read(file, N):
         count += 1
 
 if __name__ == "__main__":
-    directory = '/scratch/r/rhlozek/rylan/training_data/'
+    directory = '/scratch/r/rhlozek/rylan/npy_data/'
     types = ['normal', 'poisson', 'uniform', 'telescope', 'solid']
-    # path = '/scratch/r/rhlozek/rylan/tfrecords/frb.tfrecords'
-    # data, labels = get_files(directory, 'frb/', types)
+    a = 0
+    b = 40
+    # path = '/scratch/r/rhlozek/rylan/tfrecords/frb{}-{}.tfrecords'.format(a,b)
+    # data, labels = get_files(directory, 'frb/', types, start=a, stop=b)
     # write(path, data, labels)
-    path = '/scratch/r/rhlozek/rylan/tfrecords/rfi50-100.tfrecords'
-    data, labels = get_files(directory, 'rfi/', types, start=50, stop=100)
+    path = '/scratch/r/rhlozek/rylan/tfrecords/rfi{}-{}.tfrecords'.format(a,b)
+    data, labels = get_files(directory, 'rfi/', types, start=a, stop=b)
     write(path, data, labels)
-    # path = '/scratch/r/rhlozek/rylan/tfrecords/psr50-100.tfrecords'
-    # data, labels = get_files(directory, 'psr/', types, start=50, stop=100)
-    # write(path, data, labels)
+    exit()
+    path = '/scratch/r/rhlozek/rylan/tfrecords/psr{}-{}.tfrecords'.format(a,b)
+    data, labels = get_files(directory, 'psr/', types, start=a, stop=b)
+    write(path, data, labels)
