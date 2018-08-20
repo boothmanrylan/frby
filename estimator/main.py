@@ -8,11 +8,12 @@ import os
 
 import models
 import utils
-from dataset import Dataset
+from dataset import Dataset, NpDataset
 import numpy as np
 import six
 from six.moves import xrange
 import tensorflow as tf
+from tensorflow.python import debug as tf_debug
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -90,9 +91,8 @@ def model_fn(features, labels, mode, params, config):
         num_batches_per_epoch = (Dataset.examples_per_epoch(True) //
             (params.train_batch_size * num_workers))
         boundaries = list(num_batches_per_epoch *
-                            np.array([82, 23, 300], dtype=np.int64))
-        staged_lr = list(params.learning_rate *
-                            np.array([1, .1, .01, .002], dtype=np.int64))
+                            np.array([82, 123, 300], dtype=np.int64))
+        staged_lr = list(params.learning_rate * np.array([1, .1, .01, .002]))
 
         learning_rate = tf.train.piecewise_constant(
                 tf.train.get_global_step(), boundaries, staged_lr)
@@ -181,7 +181,6 @@ def input_fn(file_pattern, training, num_shards, batch_size):
         label_shads = [tf.parallel_stack(x) for x in label_shards]
 
         return feature_shards, label_shards
-
 
 def main(job_dir, train_pattern, eval_pattern,
          log_device_placement, num_intra_threads, **hparams):
