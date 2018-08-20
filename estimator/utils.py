@@ -62,13 +62,12 @@ class ExamplesPerSecondHook(session_run_hook.SessionRunHook):
         _ = run_context
 
         global_step = run_values.results
-        if self._timer.should_trigger_for_step(global_step):
-            elapsed_time, elapsed_steps = \
-                    self._timer.update_last_triggered_step(global_step)
-            if elapsed_time is not None:
-                steps_per_sec = elapsed_steps / elapsed_time
-                self._step_train_time += elapsed_time
-                self._total_steps += elapsed_steps
+        if self._time.should_trigger_for_step(global_step):
+            time, steps = self._time.update_last_triggered_step(global_step)
+            if time is not None:
+                steps_per_sec = steps / time
+                self._step_train_time += time
+                self._total_steps += steps
 
                 average_examples_per_sec = self_batch_size * (
                         self._total_steps / self._step_train_time)
