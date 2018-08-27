@@ -1,5 +1,10 @@
 # frby
 
+environment-spec.txt --> Conda file containing the packages needed to create
+a clone of an environment that can run mkdata.py and estimator.py Create the
+environment with
+conda create --name THE_ENVIRONMENT_NAME --file environment-spec.txt
+
 estimator.py --> The classifier
 
 job.script --> The script to use for job submission i.e. `sbatch job.script`
