@@ -4,6 +4,11 @@ from rfi import fourier_lowpass_filter, butterworth_lowpass_filter, one_over_f
 from rfi import sinusoid, sinusoidal_sum, sinusoidal_product
 from rfi import changing_sinusoid, patches, delta
 
+"""
+modifications is a list of lists of dictionaries that define the different
+modifications to be applied when creating the rfi
+"""
+
 single_mods = [[{'func': fourier_lowpass_filter,
                  'name': 'fourier_lowpass_filter',
                  'input': 'value',

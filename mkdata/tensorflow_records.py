@@ -1,3 +1,5 @@
+# Convert .npy files to TFRecords
+
 import os
 import tensorflow as tf
 import numpy as np
@@ -24,13 +26,9 @@ def _int64_feature(value):
 def _bytes_feature(value):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
-def _floats_feature(value):
-    return tf.train.Feature(float_list=tf.train.FloatList(value=value))
-
 def write(path, data, labels):
     assert(data.shape[0] == labels.shape[0])
     n_samples = data.shape[0]
-    count = 1
     with tf.python_io.TFRecordWriter(path) as tfw:
         for idx in range(n_samples):
             d = np.load(data[idx]).astype('float32')
@@ -40,48 +38,42 @@ def write(path, data, labels):
             features = tf.train.Features(feature=feature)
             example = tf.train.Example(features=features)
             tfw.write(example.SerializeToString())
-            print('wrote {}/{} to {}'.format(count, n_samples, path))
-            count += 1
+            print('wrote {}/{} to {}'.format(idx + 1, n_samples, path))
 
 def read(file, N):
     iterator = tf.python_io.tf_record_iterator(path=file)
 
     count = 0
     for record in iterator:
-        if count >= N: break
+        count += 1
+        if count > N: break
+
         example = tf.train.Example()
         example.ParseFromString(record)
-        height = int(example.features.feature['height']
-                .int64_list
-                .value[0])
-        width = int(example.features.feature['width']
-                .int64_list
-                .value[0])
         label = int(example.features.feature['label']
                 .int64_list
                 .value[0])
         data = (example.features.feature['data']
                 .bytes_list
                 .value[0])
-        data = np.fromstring(data, dtype=np.float64)
-        data = data.reshape((height, width))
+        data = np.fromstring(data, dtype=np.float32)
+        data = data.reshape((definitions.height, definitions.width))
         print(data.shape)
         print(label)
-
-        count += 1
 
 if __name__ == "__main__":
     directory = '/scratch/r/rhlozek/rylan/npy_data/'
     types = ['normal', 'poisson', 'uniform', 'telescope', 'solid']
-    a = 0
-    b = 40
+    a = 120
+    b = 160
     # path = '/scratch/r/rhlozek/rylan/tfrecords/frb{}-{}.tfrecords'.format(a,b)
     # data, labels = get_files(directory, 'frb/', types, start=a, stop=b)
     # write(path, data, labels)
-    path = '/scratch/r/rhlozek/rylan/tfrecords/rfi{}-{}.tfrecords'.format(a,b)
-    data, labels = get_files(directory, 'rfi/', types, start=a, stop=b)
-    write(path, data, labels)
-    exit()
+    # exit()
+    # path = '/scratch/r/rhlozek/rylan/tfrecords/rfi{}-{}.tfrecords'.format(a,b)
+    # data, labels = get_files(directory, 'rfi/', types, start=a, stop=b)
+    # write(path, data, labels)
+    # exit()
     path = '/scratch/r/rhlozek/rylan/tfrecords/psr{}-{}.tfrecords'.format(a,b)
     data, labels = get_files(directory, 'psr/', types, start=a, stop=b)
     write(path, data, labels)
