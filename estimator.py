@@ -38,12 +38,12 @@ parser.add_argument(
     help='Unix file pattern to TFRecords containing test data')
 parser.add_argument(
     '--job-dir',
-    default='/home/r/rhlozek/rylan/frby/estimator/job_dir/',
+    default='/scratch/r/rhlozek/rylan/models/',
     type=str,
     help='Directory to store checkpoint and evaluation files')
 parser.add_argument(
     '--num-gpus',
-    default=8,
+    default=4,
     type=int,
     help='The number of GPUs to use')
 parser.add_argument(
