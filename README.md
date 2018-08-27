@@ -1,13 +1,33 @@
 # frby
 
-environment-spec.txt --> Conda file containing the packages needed to create
-a clone of an environment that can run mkdata.py and estimator.py Create the
-environment with
-conda create --name THE_ENVIRONMENT_NAME --file environment-spec.txt
+In order to run estimator.py on the SOSCIP GPU cluster you will need a conda
+environment:
+* `module load anaconda3`
+* `conda create --name ENV_NAME --file environment-spec.txt`
+
+To use estimator_job.sh with the environment you need to also change line 12
+of estimator_job.sh to: `source activate ENV_NAME`
+
+You will also need load the following modules:
+* `cuda/9.2`
+* `cudnn/cuda9.2/7.1.4`
+* `nccl/2.2.13`
+
+
+## File descriptions
 
 estimator.py --> The classifier
 
-job.script --> The script to use for job submission i.e. `sbatch job.script`
+estimator_job.sh --> The script to use for job submission i.e. `sbatch
+estimator_job.sh` for an estimator/classification job.
+for more information on the `#SBATCH` commands see
+https://docs.scinet.utoronto.ca/index.php/SOSCIP_GPU#Job_Submission
+
+mkdata_job.sh --> The script to use for job submission for a mkdata job. It is
+possible that this script is broken. As well, estimator_job.sh is designed to
+run on the SOSCIP GPU cluster, but mkdata_job.sh is designed to run on niagara
+
+evironment-spec.txt --> Conda environment specification
 
 mkdata/ --> Everything needed to create the simulated dataset
 
