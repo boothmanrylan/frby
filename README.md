@@ -1,37 +1,46 @@
 # frby
 
-In order to run estimator.py on the SOSCIP GPU cluster you will need a conda
-environment:
-* `module load anaconda3`
-* `conda create --name ENV_NAME --file environment-spec.txt`
+In order to run model.py on the SOSCIP GPU cluster:
 
-To use estimator_job.sh with the environment you need to also change line 12
-of estimator_job.sh to: `source activate ENV_NAME`
-
-You will also need load the following modules:
-* `cuda/9.2`
-* `cudnn/cuda9.2/7.1.4`
-* `nccl/2.2.13`
-
+1. Create a conda environment
+  * Unload any previously loaded modules: `module purge`
+  * Load required modules: `module load cuda/9.2 cudnn/cuda/9.2/7.5.0 nccl/2.4.2 anaconda3`
+  * Create the environment: `conda create -n <ENV_NAME> python=3.6`
+  * Activate the environment: `source activate <ENV_NAME>`
+  * Install necessary packages: `conda install -n <ENV_NAME>
+    keras-applications==1.0.6 keras-preprocessing==1.0.5 scipy mock cython
+    numpy protobuf grpcio markdown html5lib werkzeug absl-py bleach six
+    openblas h5py astor gast  setuptools scikit-image`
+  * Install Tensorflow: `pip install
+    /scinet/sgc/Applications/TensorFlow_wheels/conda/tensorflow-1.13.1-cp36-cp36m-linux_ppc64le.whl`
+  * Verify installation: `python -c "import tensorflow as tf;
+    tf.enable_eager_execution(); print(tf.reduce_sum(tf.random_normal([1000,
+    1000])))"`
+  * Leave environment: `conda deactivate; module purge`
+1. Modify frbsearch.sh
+  * Change line 6 so the output points to a file in your scratch directory
+  * Change line 14 from `source activate astro` to `source activate <ENV_NAME>`
+  * Change line 20 to the path to where model.py is located in your home directory.
+1. Submit job
+  * `sbatch frbsearch.sh`
 
 ## File descriptions
 
-estimator.py --> The classifier
+model.py --> The classifier
 
-estimator_job.sh --> The script to use for job submission i.e. `sbatch
-estimator_job.sh` for an estimator/classification job.
-for more information on the `#SBATCH` commands see
-https://docs.scinet.utoronto.ca/index.php/SOSCIP_GPU#Job_Submission
+frbsearch.sh --> Job submission script i.e. `sbatch frbsearch.sh`
 
 mkdata_job.sh --> The script to use for job submission for a mkdata job. It is
-possible that this script is broken. As well, estimator_job.sh is designed to
+possible that this script is broken. As well, frbsearch.sh is designed to
 run on the SOSCIP GPU cluster, but mkdata_job.sh is designed to run on niagara
 
 evironment-spec.txt --> Conda environment specification
 
 mkdata/ --> Everything needed to create the simulated dataset
 
-mkdata/frb.py --> Class to simulate fast radio bursts, based on https://github.com/liamconnor/single_pulse_ml which is in turn based on https://github.com/liamconnor/single_pulse_ml  
+mkdata/frb.py --> Class to simulate fast radio bursts, based on
+https://github.com/liamconnor/single_pulse_ml which is in turn based on
+https://github.com/kiyo-masui/burst_search
 
 mkdata/psr.py --> Class to simulate pulsars, uses the class in frb.py to make
 the simulations
@@ -45,9 +54,9 @@ mkdata/mkdata.py --> Script to generate the simulated dataset using the other
 files in mkdata/
 
 mkdata/modifications.py --> Holds a list containing the parameters to use when
-create the rfi examples
+creating the rfi examples
 
-mkdata/tensorflow_records.py --> Converts the .npy files created by
-mkdata/mkdata.py into Tensorflow .tfrecords files 
+mkdata/build_tfrecords.py --> Converts the .npy files created by
+mkdata/mkdata.py into TensorFlowRecords
 
 

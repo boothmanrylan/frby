@@ -6,6 +6,9 @@
 #SBATCH --output=/scratch/r/rhlozek/rylan/sbatch/sbatch_output_%j.txt
 #SBATCH --signal=SIGINT 600
 
+
+# designed to run on niagara not SOSCIP GPU
+
 cd $SLURM_SUBMIT_DIR
 
 module purge
