@@ -1,7 +1,8 @@
 import functools
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.applications import ResNet50, MobileNet, VGG16
+from tensorflow.keras.applications import DenseNet121, DenseNet169, DenseNet201
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -12,7 +13,7 @@ tf.app.flags.DEFINE_integer('buffer_size', 100,
                             'Size of buffer used for shuffling input data')
 tf.app.flags.DEFINE_integer('num_gpus', 4,
                             'Number of GPUs used for training and testing')
-tf.app.flags.DEFINE_integer('batch_size', 32,
+tf.app.flags.DEFINE_integer('batch_size', 64,
                             'batch size, will be multiplied by NUM_GPUS')
 tf.app.flags.DEFINE_integer('train_steps', 10000,
                             'Number of steps used during training')
@@ -33,6 +34,8 @@ tf.app.flags.DEFINE_string('checkpoint_path',
                            '/scratch/r/rhlozek/rylan/models/defualt',
                            'Directory where model checkpoints will be stored')
 tf.app.flags.DEFINE_integer('seed', 1234, 'Seed for reproducibility between reruns')
+tf.app.flags.DEFINE_string('base_model', 'resnet',
+                           'Keras application to use as the base model')
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -64,10 +67,26 @@ def input_fn(pattern):
     dataset = dataset.repeat()
     return dataset
 
+def get_base_model(model_name):
+    model_name = model_name.lower()
+    if model_name == "mobilenet":
+        return MobileNet
+    elif model_name == "vgg":
+        return VGG16
+    elif model_name == "densenet121":
+        return DenseNet121
+    elif model_name == "densenet169":
+        return DenseNet169
+    elif model_name == "densenet201":
+        return DenseNet201
+    else:
+        return ResNet50
+
+
 def main(argv=None):
+    base = get_base_model(FLAGS.base_model)
     model = tf.keras.models.Sequential([
-        ResNet50(include_top=False, weights=None, input_shape=SHAPE,
-                 pooling='max'),
+        base(include_top=False, weights=None, input_shape=SHAPE, pooling='max'),
         tf.keras.layers.Dense(CLASSES, activation=tf.nn.softmax)
     ])
 
@@ -78,18 +97,10 @@ def main(argv=None):
     # log model overview
     model.summary()
 
-    # https://github.com/tensorflow/tensorflow/issues/22618
-    # global_step = tf.train.get_or_create_global_step()
-    # lr = tf.train.exponential_decay(FLAGS.learning_rate,
-    #                                 decay_steps=FLAGS.decay_steps,
-    #                                 decay_rate=FLAGS.decay_rate,
-    #                                 global_step=global_step)
-
     model.compile(loss='categorical_crossentropy',
-                  optimizer=tf.train.AdamOptimizer(learning_rate=lr),
+                  optimizer=tf.train.AdamOptimizer(),
                   metrics=['accuracy'])
 
-    # https://www.tensorflow.org/api_docs/python/tf/keras/utils/multi_gpu_model
     devices = ["/gpu:{}".format(x) for x in range(FLAGS.num_gpus)]
     mirror = tf.distribute.MirroredStrategy(devices)
 
