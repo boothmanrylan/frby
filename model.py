@@ -36,6 +36,10 @@ tf.app.flags.DEFINE_string('checkpoint_path',
 tf.app.flags.DEFINE_integer('seed', 1234, 'Seed for reproducibility between reruns')
 tf.app.flags.DEFINE_string('base_model', 'resnet',
                            'Keras application to use as the base model')
+tf.app.flags.DEFINE_string('summary_file',
+                           '/scratch/r/rhlozek/rylan/model_comparison.csv',
+                           'File to store model comparisons in after each run')
+tf.app.flags.DEFINE_int('identifier', 0, 'Slurm job submission number')
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -82,6 +86,16 @@ def get_base_model(model_name):
     else:
         return ResNet50
 
+def append_to_csv(data, file):
+    if not os.path.isfile(file):
+        data.to_csv(file, mode='a', index=False, sep=',')
+    else:
+        data.to_csv(file, mode='a', index=False, sep=',', header=False)
+
+def compare_models(results_dict):
+    cols = ['Slurm job ID', 'Accuracy', 'Base Model', 'Learning Rate',
+            'Training Steps', 'FRB Accuracy', 'PSR Accuracy', 'RFI Accuracy',
+            'Dispersion Measure MSE', 'Run Time']
 
 def main(argv=None):
     base = get_base_model(FLAGS.base_model)
@@ -118,6 +132,8 @@ def main(argv=None):
     results = estimator.evaluate(eval_input, steps=FLAGS.test_steps)
 
     print(results)
+
+    compare_models(result)
 
 if __name__ == '__main__':
     tf.app.run()
