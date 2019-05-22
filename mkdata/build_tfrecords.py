@@ -85,17 +85,20 @@ tf.app.flags.DEFINE_string('data_dir', '/scratch/r/rhlozek/rylan/npy_data/',
 tf.app.flags.DEFINE_string('output_directory',
                            '/scratch/r/rhlozek/rylan/tfrecords/',
                            'Output data directory')
-
-tf.app.flags.DEFINE_integer('train_shards', 40,
+tf.app.flags.DEFINE_integer('train_shards', 20,
                             'Number of shards in training TFRecord files.')
 tf.app.flags.DEFINE_integer('val_shards', 20,
                             'Number of shards in validation TFRecord files.')
-
+tf.app.flags.DEFINE_integer('eval_shards', 20,
+                            'Number of shards in evaluation TFRecord files.')
 tf.app.flags.DEFINE_integer('num_threads', 20,
                             'Number of threads to preprocess the images.')
-
-tf.app.flags.DEFINE_float('percent_train', 0.6,
-          'Percentage of data to use for training, rounding to nearest 10%')
+tf.app.flags.DEFINE_float('percent_train', 0.5,
+        'Percentage of data to use for training, rounding to nearest 10%')
+tf.app.flags.DEFINE_float('percent_eval', 0.4,
+        'Percentage of data to use for evaluation, rounded to nearest 10%')
+tf.app.flags.DEFINE_float('percent_val', 0.1,
+        'Percentage of data to use for validation, rounded to nearest 10%')
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -375,18 +378,31 @@ def _find_image_files(data_dir, unique_labels, start, stop):
 def main(unused_argv):
     assert not FLAGS.train_shards % FLAGS.num_threads, (
         'Please make the num_threads commensurate with train_shards')
+    assert not FLAGS.eval_shards % FLAGS.num_threads, (
+        'Please make the num_threads commensurate with eval_shards')
     assert not FLAGS.val_shards % FLAGS.num_threads, (
         'Please make the num_threads commensurate with val_shards')
-    print('Saving results to %s' % FLAGS.output_directory)
+    assert FLAGS.percent_train + FLAGS.percent_eval + FLAGS.percent_val == 1.0, (
+        'percent_train, precent_eval, percent_val should sum to 1.0')
+    print('Saving results to {}'.format(FLAGS.output_directory))
 
-    test_start = int(10 * round(FLAGS.percent_train, 1))
-    train_stop = test_start - 1
+    train_start = 0
+    eval_start = int(10 * round(FLAGS.percent_train, 1))
+    val_start = int(10 * round(FLAGS.percent_train + FLAGS.percent_eval, 1))
+    train_stop = eval_start - 1
+    eval_stop = val_start - 1
 
     train_data = _find_image_files(FLAGS.data_dir, unique_labels, 0, train_stop)
-    test_data = _find_image_files(FLAGS.data_dir, unique_labels, test_start, 9)
     _process_image_files(*(('train',) + train_data + (FLAGS.train_shards,)))
-    _process_image_files(*(('validation',) + test_data + (FLAGS.val_shards,)))
+    print("Done making training data")
 
+    eval_data = _find_image_files(FLAGS.data_dir, unique_labels, eval_start, eval_stop)
+    _process_image_files(*(('evaluate',) + eval_data + (FLAGS.val_shards,)))
+    print("Done making evaluation data")
+
+    val_data = _find_image_files(FLAGS.data_dir, unique_labels, val_start, 9)
+    _process_image_files(*(('validate',) + val_data + (FLAGS.eval_shards,)))
+    print("Done making validation data")
 
 if __name__ == '__main__':
     tf.app.run()
