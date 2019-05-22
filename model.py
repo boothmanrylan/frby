@@ -17,7 +17,7 @@ tf.app.flags.DEFINE_integer('batch_size', 64,
                             'batch size, will be multiplied by NUM_GPUS')
 tf.app.flags.DEFINE_integer('train_steps', 10000,
                             'Number of steps used during training')
-tf.app.flags.DEFINE_integer('test_steps', 1000,
+tf.app.flags.DEFINE_integer('test_steps', 10000,
                             'Number of steps used during testing')
 tf.app.flags.DEFINE_string('train_pattern',
                            '/scratch/r/rhlozek/rylan/tfrecords/train*',
@@ -25,19 +25,17 @@ tf.app.flags.DEFINE_string('train_pattern',
 tf.app.flags.DEFINE_string('test_pattern',
                            '/scratch/r/rhlozek/rylan/tfrecords/val*',
                            'Unix file pattern pointing to test records')
-tf.app.flags.DEFINE_float('learning_rate', 0.1, 'Initial learning rate')
-tf.app.flags.DEFINE_integer('decay_steps', 1000,
-                            'Number of steps until learning rate decays')
-tf.app.flags.DEFINE_float('decay_rate', 0.96,
-                          'Rate at which the learning rate decays')
 tf.app.flags.DEFINE_string('checkpoint_path',
                            '/scratch/r/rhlozek/rylan/models/defualt',
                            'Directory where model checkpoints will be stored')
-tf.app.flags.DEFINE_integer('seed', 1234, 'Seed for reproducibility between reruns')
+tf.app.flags.DEFINE_integer('seed', 1234, 'Seed for reproducibility')
 tf.app.flags.DEFINE_string('base_model', 'resnet',
                            'Keras application to use as the base model')
+tf.app.flags.DEFINE_boolean('classification', True,
+                            'Whether to classify samples or predict dm')
 
 FLAGS = tf.app.flags.FLAGS
+
 
 def parse_fn(example):
     example_fmt = {
@@ -49,14 +47,21 @@ def parse_fn(example):
         'text_label': tf.FixedLenFeature([], tf.string),
         'format':     tf.FixedLenFeature([], tf.string),
         'filename':   tf.FixedLenFeature([], tf.string),
-        'image':      tf.FixedLenFeature([], tf.string)
+        'image':      tf.FixedLenFeature([], tf.string),
+        'dm':         tf.FixedLenFeature([], tf.float32)
     }
 
     parsed = tf.parse_single_example(example, example_fmt)
     image = tf.image.decode_image(parsed['image'], channels=1)
     image.set_shape(SHAPE)
-    label = tf.one_hot(parsed['label'], CLASSES)
+
+    if FLAGS.classification:
+        label = tf.one_hot(parsed['label'], CLASSES)
+    else:
+        label = parsed['dm']
+
     return image, label
+
 
 def input_fn(pattern):
     records = tf.data.Dataset.list_files(pattern)
@@ -66,6 +71,7 @@ def input_fn(pattern):
     dataset = dataset.batch(FLAGS.batch_size * FLAGS.num_gpus)
     dataset = dataset.repeat()
     return dataset
+
 
 def get_base_model(model_name):
     model_name = model_name.lower()
@@ -83,12 +89,31 @@ def get_base_model(model_name):
         return ResNet50
 
 
-def main(argv=None):
+def build_model():
+    if FLAGS.classification:
+        output_neurons = CLASSES
+        activation = tf.nn.softmax
+        loss = 'categorical_crossentropy'
+        metrics = ['accuracy']
+    else:
+        output_neurons = 1
+        activation = None
+        loss = 'mean_squared_error'
+        metrics = ['mean_squared_error', 'mean_absolute_error']
+
     base = get_base_model(FLAGS.base_model)
-    model = tf.keras.models.Sequential([
+    model = tf.keras.model.Sequential([
         base(include_top=False, weights=None, input_shape=SHAPE, pooling='max'),
-        tf.keras.layers.Dense(CLASSES, activation=tf.nn.softmax)
+        tf.keras.layers.Dense(output_neurons, activation=activation)
     ])
+
+    mode.compile(loss=loss, optimizer=tf.train.AdamOptimizer(), metrics=metrics)
+
+    return model
+
+
+def main(argv=None):
+    model = build_model()
 
     # log model parameters:
     for flag in FLAGS.flag_values_dict():
@@ -96,10 +121,6 @@ def main(argv=None):
 
     # log model overview
     model.summary()
-
-    model.compile(loss='categorical_crossentropy',
-                  optimizer=tf.train.AdamOptimizer(),
-                  metrics=['accuracy'])
 
     devices = ["/gpu:{}".format(x) for x in range(FLAGS.num_gpus)]
     mirror = tf.distribute.MirroredStrategy(devices)
@@ -118,6 +139,7 @@ def main(argv=None):
     results = estimator.evaluate(eval_input, steps=FLAGS.test_steps)
 
     print(results)
+
 
 if __name__ == '__main__':
     tf.app.run()
