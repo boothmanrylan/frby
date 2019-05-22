@@ -5,6 +5,7 @@ from tensorflow.keras.applications import ResNet50, MobileNet, VGG16
 from tensorflow.keras.applications import DenseNet121, DenseNet169, DenseNet201
 from tensorflow import contrib
 import tensorflow_datasets as tfds
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dense, Flatten
 
 autograph = contrib.autograph
 
@@ -188,6 +189,27 @@ def get_base_model(model_name):
         return DenseNet201
     else:
         return ResNet50
+
+
+def model_fn(features, labels, mode, params):
+    x = tf.feature_column.input_layer(features, params["feature_columns"])
+    x = tf.layers.conv2D(x, 64, (3, 3), activation='relu', padding='same', name='block1_conv1')
+    x = tf.layers.conv2D(x, 64, (3, 3), activation='relu', padding='same', name='block1_conv2')
+    x = tf.layers.MaxPooling2D(x, (2, 2), strides=(2, 2) name='block1_pool')
+    x = tf.layers.conv2D(x, 128 (3, 3), activation='relu', padding='same', name='block2_conv1')
+    x = tf.layers.conv2D(x, 128 (3, 3), activation='relu', padding='same', name='block2_conv2')
+    x = tf.layers.MaxPooling2D(x, (2, 2), strides=(2, 2), name='block2_pool')
+    x = tf.layers.conv2D(x, 256 (3, 3), activation='relu', padding='same', name='block3_conv1')
+    x = tf.layers.conv2D(x, 256 (3, 3), activation='relu', padding='same', name='block3_conv2')
+    x = tf.layers.conv2D(x, 256 (3, 3), activation='relu', padding='same', name='block3_conv3')
+    x = tf.layers.conv2D(x, 256 (3, 3), activation='relu', padding='same', name='block3_conv4')
+    x = tf.layers.MaxPooling2D(x, (2, 2), strides=(2, 2), name='block3_pool')
+    x = tf.layers.conv2D(x, 512, (3, 3), activation='relu', padding='same', name='block4_conv1')
+    x = tf.layers.conv2D(x, 512, (3, 3), activation='relu', padding='same', name='block4_conv2')
+    x = tf.layers.conv2D(x, 512, (3, 3), activation='relu', padding='same', name='block4_conv3')
+    x = tf.layers.conv2D(x, 512, (3, 3), activation='relu', padding='same', name='block4_conv4')
+    x = tf.layers.MaxPooling2D(x, (2, 2), strides=(2, 2), name='block4_pool')
+
 
 
 def build_model():
