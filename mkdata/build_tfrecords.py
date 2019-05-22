@@ -44,18 +44,19 @@ and
 
 The Example proto contains the following fields:
 
-  image: string containing JPEG encoded image in RGB colorspace
+  image: string containing PNG encoded image in RGB colorspace
   height: integer, image height in pixels
   width: integer, image width in pixels
   colorspace: string, specifying the colorspace, always 'RGB'
   channels: integer, specifying the number of channels, always 3
-  format: string, specifying the format, always 'JPEG'
+  format: string, specifying the format, always 'PNG'
   filename: string containing the basename of the image file
-            e.g. 'n01440764_10026.JPEG' or 'ILSVRC2012_val_00000293.JPEG'
+            e.g. 'n01440764_10026.npy' or 'ILSVRC2012_val_00000293.npy'
   label: integer specifying the index in a classification layer.
     The label ranges from [0, num_labels]
   text_label: string specifying the human-readable version of the label
     e.g. 'dog'
+  dm: the dispersion measure of the sample. 0 if the sample is rfi
 """
 from __future__ import absolute_import
 from __future__ import division
@@ -73,6 +74,7 @@ import imageio
 
 import numpy as np
 import tensorflow as tf
+import pickle
 
 
 # turn off unnecessary imageio warning
@@ -105,6 +107,8 @@ FLAGS = tf.app.flags.FLAGS
 
 unique_labels = ["frb", "psr", "rfi"]
 
+missing_metadata = 0
+
 
 def _int64_feature(value):
     """Wrapper for inserting int64 features into Example proto."""
@@ -113,9 +117,62 @@ def _int64_feature(value):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
 
 
+def _float_feature(value):
+    """Wrapper for inserting float features into Example proto."""
+    if not isinstance(value, list):
+        value = [value]
+    return tf.train.Feature(float_list=tf.train.FloatList(value=value))
+
+
 def _bytes_feature(value):
     """Wrapper for inserting bytes features into Example proto."""
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
+
+def parse_filename(filename):
+    """
+    filenames no longer perfectly match their counterparts in the metadata
+    files, in particuler /scratch/r/rhlozek/rylan/npy_data/000/frb/0.npy should
+    be converted to /scratch/r/rhlozek/rylan/training_data/0/frb/0.npy
+
+    Args:
+        filename: string, path to the data sample of interest
+    Returns:
+        metadata_file: string path to the corresponding metadata pickle
+        key: key to get this samples metadata from metedata_file
+    """
+    file = filename.split('/')
+    root = '/'.join(file[:6])
+    rank = int(file[6])
+    metadata_file = root + '/{:03}/metadata{}.pkl'.format(rank, rank)
+    key = '/'.join(file[:5]) + '/training_data/' + str(rank) + '/' + '/'.join(file[7:])
+    return metadata_file, key
+
+
+def get_dm(filename):
+    """
+    Returns the dispersion measure of the simulation contained in file. If the
+    simulation is RFI, the returned dm is always 0.0
+
+    Args:
+        filename: string, path to the data sample
+    Returns:
+        dm: float
+    """
+    metadata_file, key = parse_filename(filename)
+    with open(metadata_file, 'rb') as f:
+        metadata = pickle.load(f)
+    try:
+        metadata = metadata[key]
+    except KeyError:
+        # metadata for this sample does not exist, don't save it
+        return -1
+
+    if 'dm' in metadata.keys():
+        dm = metadata['dm'].value
+    else: # sample is rfi 
+        dm = 0.0
+    return np.float32(dm)
 
 
 def _convert_to_example(filename, image_buffer, label, text, height, width,
@@ -124,19 +181,24 @@ def _convert_to_example(filename, image_buffer, label, text, height, width,
 
     Args:
         filename: string, path to an image file, e.g., '/path/to/example.JPG'
-        image_buffer: string, JPEG encoding of RGB image
+        image_buffer: string, PNG encoding of image
         label: integer, identifier for the ground truth for the network
         text: string, unique human-readable, e.g. 'dog'
         height: integer, image height in pixels
         width: integer, image width in pixels
         channels: integer, image depth in pixels
     Returns:
-        Example proto
+        Example proto or False is metadata for filename is missing
     """
 
-    colorspace = 'RGB'
-    image_format = 'JPEG'
+    colorspace = 'RGB' # not true anymore, files are all b/w
+    image_format = 'PNG'
     base_filename = os.path.basename(filename)
+
+    dm = get_dm(filename)
+
+    if dm < 0: # missing metadata
+        return False
 
     example = tf.train.Example(features=tf.train.Features(feature={
         'height':     _int64_feature(height),
@@ -147,7 +209,8 @@ def _convert_to_example(filename, image_buffer, label, text, height, width,
         'text_label': _bytes_feature(tf.compat.as_bytes(text)),
         'format':     _bytes_feature(tf.compat.as_bytes(image_format)),
         'filename':   _bytes_feature(tf.compat.as_bytes(base_filename)),
-        'image':      _bytes_feature(tf.compat.as_bytes(image_buffer))}))
+        'image':      _bytes_feature(tf.compat.as_bytes(image_buffer)),
+        'dm':         _float_feature(dm)}))
     return example
 
 
@@ -192,7 +255,7 @@ def _process_image(filename, coder):
         filename: string, path to an image file e.g., '/path/to/example.JPG'.
         coder: instance of ImageCoder to provide TensorFlow image coding utils.
     Returns:
-        image_buffer: string, JPEG encoding of RGB image.
+        image_buffer: string, PNG encoding of RGB image.
         height: integer, image height in pixels.
         width: integer, image width in pixels.
     """
@@ -259,8 +322,14 @@ def _process_image_files_batch(coder, thread_index, ranges, name, filenames,
                 print('SKIPPED: Unexpected error while decoding %s.' % filename)
                 continue
 
-            example = _convert_to_example(filename, image, label,
-                                          text, height, width, channels)
+            example = _convert_to_example(filename, image, label, text, height,
+                                          width, channels)
+            if not example:
+                print('SKIPPED: metadata did not exist for {}.'.format(filename))
+                global missing_metadata
+                missing_metadata += 1
+                continue
+
             writer.write(example.SerializeToString())
             shard_counter += 1
             counter += 1
@@ -330,7 +399,7 @@ def _find_image_files(data_dir, unique_labels, start, stop):
     Args:
         data_dir: string, path to the root directory of images.
 
-          Assumes that the image data set resides in JPEG files located in
+          Assumes that the image data set resides in PNG files located in
           the following directory structure.
 
             data_dir/*/label1/*/image.jpeg
@@ -369,7 +438,7 @@ def _find_image_files(data_dir, unique_labels, start, stop):
     texts = [texts[i] for i in shuffled_index]
     labels = [labels[i] for i in shuffled_index]
 
-    print('Found %d JPEG files across %d labels inside %s.' %
+    print('Found %d npy files across %d labels inside %s.' %
           (len(filenames), len(unique_labels), data_dir))
 
     return filenames, texts, labels
@@ -403,6 +472,10 @@ def main(unused_argv):
     val_data = _find_image_files(FLAGS.data_dir, unique_labels, val_start, 9)
     _process_image_files(*(('validate',) + val_data + (FLAGS.eval_shards,)))
     print("Done making validation data")
+
+    global missing_metadata
+    if missing_metadata > 0:
+        print('{} files did not have metadata.'.format(missing_metadata))
 
 if __name__ == '__main__':
     tf.app.run()
