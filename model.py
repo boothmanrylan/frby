@@ -80,21 +80,19 @@ def extract_labels(dataset):
 
     return labels
 
+
 def temp_scaling(logits, labels, sess, maxiter=50):
-    temp_var = tf.get_variable("temp", shape=[1],
-                               initializer=tf.initializers.constant(1.5))
+    temp_var = tf.get_variable("temp", shape=[1], initializer=tf.initializers.constant(1.5))
 
     logits_tensor = tf.constant(logits, name='logits_valid', dtype=tf.float32)
     labels_tensor = tf.constant(labels, name='labels_valid', dtype=tf.float32)
 
     logits_w_temp = tf.divide(logits_tensor, temp_var)
 
-    nll_loss_op = tf.losses.softmax_cross_entropy(
-            onehot_labels=labels_tensor, logits=logits_w_temp)
+    nll_loss_op = tf.losses.softmax_cross_entropy(onehot_labels=labels_tensor, logits=logits_w_temp)
     org_nll_loss_op = tf.identity(nll_loss_op)
 
-    optim = tf.contrib.opt.ScipyOptimizerInterface(nll_loss_op,
-                                                   options={'maxiter': maxiter})
+    optim = tf.contrib.opt.ScipyOptimizerInterface(nll_loss_op, options={'maxiter': maxiter})
 
     sess.run(temp_var.initializer)
     sess.run(tf.local_variables_initializer())
@@ -102,7 +100,9 @@ def temp_scaling(logits, labels, sess, maxiter=50):
     optim.minimize(sess)
     nll_loss = sess.run(nll_loss_op)
     temperature = sess.run(temp_var)
-    return temperature#[0]
+
+    return temp_var
+
 
 def inverse_softmax(x):
     """
@@ -110,15 +110,6 @@ def inverse_softmax(x):
     """
     return np.log((-x * (np.sum(np.exp(x), axis=1, keepdims=True) - np.exp(x))) / (x - 1))
 
-def set_temperature(model, dataset):
-    labels = np.concatenate([d[1] for d in tfds.as_numpy(dataset)])
-    logits = model.predict(dataset, steps=50)
-    with tf.Session() as sess:
-        temp = temp_scaling(labels, logits, sess)
-        print(temp[0])
-        exit()
-
-    return temp
 
 @autograph.convert(recursive=True)
 def predict(estimator, data, temperature):
@@ -144,6 +135,7 @@ def predict(estimator, data, temperature):
         pass
     return autograph.stack(probabilities), autograph.stack(predictions), tf.reduce_mean(autograph.stack(accuracies))
 
+
 def parse_fn(example):
     example_fmt = {
         'height':     tf.FixedLenFeature([], tf.int64),
@@ -163,6 +155,7 @@ def parse_fn(example):
     label = tf.one_hot(parsed['label'], CLASSES)
     return image, label
 
+
 def input_fn(pattern, repeat=True):
     records = tf.data.Dataset.list_files(pattern)
     dataset = records.interleave(tf.data.TFRecordDataset, cycle_length=4)
@@ -172,6 +165,7 @@ def input_fn(pattern, repeat=True):
     if repeat:
         dataset = dataset.repeat()
     return dataset
+
 
 def get_base_model(model_name):
     model_name = model_name.lower()
@@ -196,29 +190,67 @@ def main(argv=None):
         tf.keras.layers.Dense(CLASSES, activation=None)
     ])
 
-    # # log model parameters:
-    # for flag in FLAGS.flag_values_dict():
-    #     print("{}:\t{}".format(flag, FLAGS[flag].value))
+    # log model parameters:
+    for flag in FLAGS.flag_values_dict():
+        print("{}:\t{}".format(flag, FLAGS[flag].value))
 
     model.compile(loss='categorical_crossentropy',
                   optimizer=tf.train.AdamOptimizer(),
                   metrics=['accuracy'])
 
-    # devices = ["/gpu:{}".format(x) for x in range(FLAGS.num_gpus)]
-    # mirror = tf.distribute.MirroredStrategy(devices)
+    devices = ["/gpu:{}".format(x) for x in range(FLAGS.num_gpus)]
+    mirror = tf.distribute.MirroredStrategy(devices)
 
-    # config = tf.estimator.RunConfig(train_distribute=mirror,
-    #                                 eval_distribute=mirror,
-    #                                 model_dir=FLAGS.checkpoint_path,
-    #                                 tf_random_seed=FLAGS.seed)
+    config = tf.estimator.RunConfig(train_distribute=mirror,
+                                    eval_distribute=mirror,
+                                    model_dir=FLAGS.checkpoint_path,
+                                    tf_random_seed=FLAGS.seed)
 
-    # estimator = tf.keras.estimator.model_to_estimator(model) #, config=config)
+    estimator = tf.keras.estimator.model_to_estimator(model, config=config)
 
-    train_input = input_fn(pattern=FLAGS.train_pattern, repeat=True)
-    model.fit(train_input, steps_per_epoch=10, epochs=1)
+    train_input = functools.partial(input_fn, pattern=FLAGS.train_pattern, repeat=True)
+    estimator.train(train_input, steps=FLAGS.train_steps)
 
-    validation_input = input_fn(FLAGS.validation_pattern, repeat=False)
-    temperature = set_temperature(model, validation_input)
+    ##########################################################################
+    ##########################################################################
+    val_dataset = input_fn(FLAGS.validation_pattern, repeat=False)
+    val_images, val_labels = val_dataset.make_one_shot_iterator().get_next()
+
+    val_predictions = estimator.predict(val_images, val_labels)
+
+    dataset = input_fn(FLAGS.test_pattern, repeat=False)
+    images, labels = dataset.make_one_shot_iterator().get_next()
+
+    predictions = estimator.predict(images, labels)
+
+    saver = tf.train.Saver()
+    with tf.Session() as sess:
+        ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_path)
+        saver.restore(sess, ckpt.model_checkpoint_path)
+
+        val_prediction_values = []
+        val_label_values = []
+        while True:
+            try:
+                preds, lbls = sess.run([val_predictions, val_labels])
+                prediction_values += preds
+                label_values += lbls
+            except tf.errors.OutOfRangeError:
+                break
+
+        temp = temp_scaling(val_prediction_values, val_label_values, sess)
+
+        prediction_values = []
+        label_values = []
+        while True:
+            try:
+                preds, lbls = sess.run([predictions, labels])
+                prediction_values += preds
+                label_values += lbls
+            except tf.errors.OutOfRangeError:
+                break
+    ##########################################################################
+    ##########################################################################
 
     # eval_data = functools.partial(input_fn, pattern=FLAGS.test_pattern, repeat=False)
     # probs, preds, acc = evaluate(estimator, eval_data, temperature)
