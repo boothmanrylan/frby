@@ -178,6 +178,18 @@ def get_base_model(model_name):
 
 
 def model_fn(features, labels, mode, params):
+    class TempScaler(tf.train.SessionRunHook):
+        def __init__(self, dataset, temp_var, logits, labels):
+            self.temp_placeholder = tf.placeholder(tf.float32, [])
+            self.update_op = tf.assign(temp_var, self.temp_placeholder)
+            self.logits = logits
+            self.labels = labels
+
+        def end(self, runcontext):
+            temp = temp_scaling(self.logits, self.labels, runcontext.session)
+            run_context.session.run(self.update_op,
+                                    feed_dict={self.temp_placeholder, temp})
+
     base_model = get_base_model(params["model_name"])
     model = tf.keras.Sequential([ # this might need to be converted to the functional api
         base_model(include_top=False, input_shape=SHAPE, weights=None),
