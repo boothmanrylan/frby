@@ -102,12 +102,12 @@ def build_model():
         metrics = ['mean_squared_error', 'mean_absolute_error']
 
     base = get_base_model(FLAGS.base_model)
-    model = tf.keras.model.Sequential([
+    model = tf.keras.models.Sequential([
         base(include_top=False, weights=None, input_shape=SHAPE, pooling='max'),
         tf.keras.layers.Dense(output_neurons, activation=activation)
     ])
 
-    mode.compile(loss=loss, optimizer=tf.train.AdamOptimizer(), metrics=metrics)
+    model.compile(loss=loss, optimizer=tf.train.AdamOptimizer(), metrics=metrics)
 
     return model
 
