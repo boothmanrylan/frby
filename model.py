@@ -20,18 +20,18 @@ tf.app.flags.DEFINE_integer('num_gpus', 4,
                             'Number of GPUs used for training and testing')
 tf.app.flags.DEFINE_integer('batch_size', 64,
                             'batch size, will be multiplied by NUM_GPUS')
-tf.app.flags.DEFINE_integer('train_steps', 10000,
+tf.app.flags.DEFINE_integer('train_steps', 100,
                             'Number of steps used during training')
-tf.app.flags.DEFINE_integer('eval_steps', 10000,
+tf.app.flags.DEFINE_integer('eval_steps', 1000,
                             'Number of steps used during testing')
 tf.app.flags.DEFINE_string('train_pattern',
-                           '/scratch/r/rhlozek/rylan/tfrecords/train-*',
+                           '/scratch/r/rhlozek/rylan/tfrecords/train-00000*',
                            'Unix file pattern pointing to training records')
 tf.app.flags.DEFINE_string('eval_pattern',
-                           '/scratch/r/rhlozek/rylan/tfrecords/evaluate-*',
+                           '/scratch/r/rhlozek/rylan/tfrecords/evaluate-00000*',
                            'Unix file pattern pointing to test records')
-tf.app.flags.DEFINE_string('validation_pattern',
-                           '/scratch/r/rhlozek/rylan/tfrecords/validate-*',
+tf.app.flags.DEFINE_string('val_pattern',
+                           '/scratch/r/rhlozek/rylan/tfrecords/validate-00000*',
                            'Unix file pattern pointing to validation records')
 tf.app.flags.DEFINE_string('checkpoint_path',
                            '/scratch/r/rhlozek/rylan/models/defualt',
@@ -43,84 +43,6 @@ tf.app.flags.DEFINE_boolean('classification', True,
 tf.app.flags.DEFINE_integer("seed", 12345, "Seed for reproducibility")
 
 FLAGS = tf.app.flags.FLAGS
-
-
-def temp_scaling(logits, labels, sess, maxiter=50):
-    temp_var = tf.get_variable("temp", shape=[1], initializer=tf.initializers.constant(1.5))
-
-    logits_tensor = tf.constant(logits, name='logits_valid', dtype=tf.float32)
-    labels_tensor = tf.constant(labels, name='labels_valid', dtype=tf.float32)
-
-    logits_w_temp = tf.divide(logits_tensor, temp_var)
-
-    nll_loss_op = tf.losses.softmax_cross_entropy(onehot_labels=labels_tensor, logits=logits_w_temp)
-    org_nll_loss_op = tf.identity(nll_loss_op)
-
-    optim = tf.contrib.opt.ScipyOptimizerInterface(nll_loss_op, options={'maxiter': maxiter})
-
-    sess.run(temp_var.initializer)
-    sess.run(tf.local_variables_initializer())
-    org_nll_loss = sess.run(org_nll_op)
-    optim.minimize(sess)
-    nll_loss = sess.run(nll_loss_op)
-    temperature = sess.run(temp_var)
-
-    return temperature
-
-
-def get_prediction_probabilities(validation_dataset, eval_dataset, params, temp=None):
-    val_images, val_labels = validation_dataset.make_one_shot_iterator().get_next()
-    images, labels = eval_dataset.make_one_shot_iterator().get_next()
-
-    val_predictions = model_fn(val_images, val_labels,
-                               tf.estimator.ModeKeys.EVAL, params).predictions
-    predictions = model_fn(images, labels,
-                           tf.estimator.ModeKeys.EVAL, params).predictions
-
-    saver = tf.train.Saver()
-    with tf.Session() as sess:
-        ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_path)
-        saver.restore(sess, ckpt.model_checkpoint_path)
-
-        if temp is None: # use temp_scaling to find temperature
-            val_logits = []
-            val_labels = []
-            while True:
-                try:
-                    preds, lbls = sess.run([val_predictions, val_labels])
-                    val_logits += preds['logits']
-                    val_labels += lbls
-                except tf.errors.OutOfRangeError:
-                    break
-
-            temp = temp_scaling(val_logits, val_labels, sess)
-
-        eval_logits = []
-        eval_labels = []
-        while True:
-            try:
-                preds, lbls = sess.run([predictions, labels])
-                eval_logits += preds['logits']
-                eval_labels += lbls
-            except tf.errors.OutOfRangeError:
-                break
-
-        logits = np.asarray(logits) / temp
-        probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
-        predictions = np.argmax(probs, axis=1)
-
-        accuracy = tf.metrics.accuracy(labels, predictions)
-        confusion_matrix = tf.confusion_matrix(np.argmax(labels, axis=1),
-                                               np.argmax(predictions, axis=1))
-
-        output = {
-            'logits': logits,
-            'probs': probs,
-            'class_preds': predictions,
-            'accuracy': accuracy,
-            'confusion_matrix': confusion_matrix
-        }
-        return predictions, probs, eval_labels
 
 
 def parse_fn(example):
@@ -147,7 +69,7 @@ def parse_fn(example):
     else:
         label = parsed['dm']
 
-    return image, label
+    return {'image': image, 'label': label}, label
 
 
 def input_fn(pattern, repeat=True):
@@ -176,20 +98,47 @@ def get_base_model(model_name):
     else:
         return ResNet50
 
+class TemperatureScaler(tf.train.SessionRunHook):
+    def __init__(self, temp_var, model_fn, params, checkpoint_dir, input_fn):
+        self.logits_tensor = tf.placeholder(tf.float32, name='logits_placeholder')
+        self.labels_tensor = tf.placeholder(tf.float32, name='labels_placeholder')
+        #TODO: logits_tensor is "logits_placeholder:0" feed_dict needs replica_x/logits_placeholder
+        # this issue does not exist if the training is not distributed
+
+        self.optim = tf.contrib.opt.ScipyOptimizerInterface(
+            tf.losses.softmax_cross_entropy(
+                onehot_labels=self.labels_tensor,
+                logits=tf.divide(self.logits_tensor, temp_var)
+            ),
+            options={'maxiter': 100},
+            var_list=[temp_var]
+        )
+
+        self.estimator = tf.estimator.Estimator(
+            model_fn=model_fn,
+            params=params,
+            model_dir=checkpoint_dir
+        )
+
+        self.input_fn = input_fn
+
+    def end(self, session):
+        preds = list(self.estimator.predict(self.input_fn, yield_single_examples=False))
+        fd = {self.labels_tensor: np.vstack([p['labels'] for p in preds]),
+              self.logits_tensor: np.vstack([p['logits'] for p in preds])}
+        self.optim.minimize(session, feed_dict=fd)
+        #TODO: temp gets updated but its value does not get passed to temp_var
+        # inside the model
+
 
 def model_fn(features, labels, mode, params):
-    class TempScaler(tf.train.SessionRunHook):
-        def __init__(self, dataset, temp_var, logits, labels):
-            self.temp_placeholder = tf.placeholder(tf.float32, [])
-            self.update_op = tf.assign(temp_var, self.temp_placeholder)
-            self.logits = logits
-            self.labels = labels
-
-        def end(self, runcontext):
-            temp = temp_scaling(self.logits, self.labels, runcontext.session)
-            run_context.session.run(self.update_op,
-                                    feed_dict={self.temp_placeholder, temp})
-
+    """
+    features is now a dictionary with two keys: images, and labels. Therefore
+    labels is passed to the function twice, the reason for this is that the
+    estimator predict function will always toss labels out and we need labels
+    in order to properly do temperature scaling
+    see: https://github.com/tensorflow/tensorflow/issues/17824
+    """
     base_model = get_base_model(params["model_name"])
     model = tf.keras.Sequential([ # this might need to be converted to the functional api
         base_model(include_top=False, input_shape=SHAPE, weights=None),
@@ -199,28 +148,41 @@ def model_fn(features, labels, mode, params):
         Dense(params['n_classes'], activation=None, name='logits')
     ])
 
+    temp_var = tf.get_variable(
+        "temp",
+        shape=[1],
+        initializer=tf.initializers.constant(1.5),
+        aggregation=tf.VariableAggregation.ONLY_FIRST_REPLICA)
+
     if mode == tf.estimator.ModeKeys.TRAIN:
-        logits = model(features, training=True)
+        logits = model(features['image'], training=True)
         optimizer = tf.train.AdamOptimizer()
         if params['n_classes'] > 1:
             loss = tf.losses.softmax_cross_entropy(labels, logits)
         else:
             loss = tf.losses.mean_squared_error(labels, logits)
         train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
-        return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op)
+        hook = TemperatureScaler(temp_var, model_fn, params,
+                                 FLAGS.checkpoint_path,
+                                 params["validation_input"])
+        return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op,
+                                          training_hooks=[hook])
     elif mode == tf.estimator.ModeKeys.PREDICT:
-        logits = model(features, training=False)
+        logits = model(features['image'], training=False)
         if params['n_classes'] > 1:
             predicted_classes = tf.argmax(logits, 1)
             predictions = {
-                'class_ids': predicted_classes[:, tf.newaxis],
-                'logits': logits
+                'labels': features['label'],
+                'predicted_class': predicted_classes[:, tf.newaxis],
+                'logits': logits,
+                'probs': tf.divide(logits, temp_var),
+                'temp': temp_var.value()
             }
         else:
             predictions = logits
         return tf.estimator.EstimatorSpec(mode, predictions=predictions)
     elif mode == tf.estimator.ModeKeys.EVAL:
-        logits = model(features, training=False)
+        logits = model(features['image'], training=False)
         if params['n_classes'] > 1:
             loss = tf.losses.softmax_cross_entropy(labels, logits)
         else:
@@ -253,13 +215,15 @@ def main(argv=None):
     devices = ["/gpu:{}".format(x) for x in range(FLAGS.num_gpus)]
     mirror = tf.distribute.MirroredStrategy(devices)
 
-    config = tf.estimator.RunConfig(train_distribute=mirror,
-                                    eval_distribute=mirror,
+    config = tf.estimator.RunConfig(#train_distribute=mirror,
+                                    #eval_distribute=mirror,
                                     model_dir=FLAGS.checkpoint_path,
                                     tf_random_seed=FLAGS.seed)
 
+    val_input = functools.partial(input_fn, pattern=FLAGS.val_pattern, repeat=False)
     params={'n_classes': CLASSES if FLAGS.classification else 1,
-            'model_name': FLAGS.base_model}
+            'model_name': FLAGS.base_model,
+            'validation_input': val_input}
     estimator = tf.estimator.Estimator(
         model_fn=model_fn,
         params=params,
@@ -269,16 +233,9 @@ def main(argv=None):
     train_input = functools.partial(input_fn, pattern=FLAGS.train_pattern, repeat=True)
     estimator.train(train_input, steps=FLAGS.train_steps)
 
-    # val_dataset = input_fn(FLAGS.validation_pattern, repeat=False)
-    # eval_dataset = input_fn(FLAGS.eval_pattern, repeat=False)
-
-    # results = get_prediction_probabilities(val_dataset, eval_dataset, params)
-    # for key, value in results.items():
-    #     print(key, value)
-
     eval_input = functools.partial(input_fn, pattern=FLAGS.eval_pattern, repeat=False)
-    results = estimator.evaluate(eval_input, steps=FLAGS.eval_steps)
-    print(results)
+    results = estimator.predict(eval_input, yield_single_examples=False)
+    print(list(results)[0]['temp'])
 
 if __name__ == '__main__':
     tf.app.run()
