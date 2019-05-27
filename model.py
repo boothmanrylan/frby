@@ -1,5 +1,7 @@
 import functools
+import os
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.applications import ResNet50, MobileNet, VGG16
 from tensorflow.keras.applications import DenseNet121, DenseNet169, DenseNet201
@@ -9,6 +11,8 @@ tf.logging.set_verbosity(tf.logging.INFO)
 SHAPE = (32, 38, 1)
 CLASSES = 3
 
+summary_keys = ('Slurm Job ID', 'Model Type', 'accuracy')
+
 tf.app.flags.DEFINE_integer('buffer_size', 100,
                             'Size of buffer used for shuffling input data')
 tf.app.flags.DEFINE_integer('num_gpus', 4,
@@ -17,7 +21,7 @@ tf.app.flags.DEFINE_integer('batch_size', 64,
                             'batch size, will be multiplied by NUM_GPUS')
 tf.app.flags.DEFINE_integer('train_steps', 10000,
                             'Number of steps used during training')
-tf.app.flags.DEFINE_integer('test_steps', 1000,
+tf.app.flags.DEFINE_integer('test_steps', 10000,
                             'Number of steps used during testing')
 tf.app.flags.DEFINE_string('train_pattern',
                            '/scratch/r/rhlozek/rylan/tfrecords/train*',
@@ -25,21 +29,16 @@ tf.app.flags.DEFINE_string('train_pattern',
 tf.app.flags.DEFINE_string('test_pattern',
                            '/scratch/r/rhlozek/rylan/tfrecords/val*',
                            'Unix file pattern pointing to test records')
-tf.app.flags.DEFINE_float('learning_rate', 0.1, 'Initial learning rate')
-tf.app.flags.DEFINE_integer('decay_steps', 1000,
-                            'Number of steps until learning rate decays')
-tf.app.flags.DEFINE_float('decay_rate', 0.96,
-                          'Rate at which the learning rate decays')
 tf.app.flags.DEFINE_string('checkpoint_path',
-                           '/scratch/r/rhlozek/rylan/models/defualt',
+                           '/scratch/r/rhlozek/rylan/models/default',
                            'Directory where model checkpoints will be stored')
 tf.app.flags.DEFINE_integer('seed', 1234, 'Seed for reproducibility between reruns')
 tf.app.flags.DEFINE_string('base_model', 'resnet',
                            'Keras application to use as the base model')
 tf.app.flags.DEFINE_string('summary_file',
-                           '/scratch/r/rhlozek/rylan/model_comparison.csv',
+                           '/scratch/r/rhlozek/rylan/results_summary.csv',
                            'File to store model comparisons in after each run')
-tf.app.flags.DEFINE_int('identifier', 0, 'Slurm job submission number')
+tf.app.flags.DEFINE_integer('identifier', 1, 'Slurm job submission number')
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -92,10 +91,17 @@ def append_to_csv(data, file):
     else:
         data.to_csv(file, mode='a', index=False, sep=',', header=False)
 
-def compare_models(results_dict):
-    cols = ['Slurm job ID', 'Accuracy', 'Base Model', 'Learning Rate',
-            'Training Steps', 'FRB Accuracy', 'PSR Accuracy', 'RFI Accuracy',
-            'Dispersion Measure MSE', 'Run Time']
+def summarize(results_dict):
+    if not os.path.exists(FLAGS.summary_file):
+        empty_results = {k:[] for k in summary_keys}
+        empty_results = pd.DataFrame(empty_results)
+        empty_results.to_csv(FLAGS.summary_file, header=True)
+    results_dict["Slurm Job ID"] = FLAGS.identifier
+    results_dict["Model Type"] = FLAGS.base_model
+    results_dict = {k:[v] for k,v in results_dict.items() if k in summary_keys}
+    results = pd.DataFrame(results_dict)
+    with open(FLAGS.summary_file, 'a') as f:
+        results.to_csv(f, header=False)
 
 def main(argv=None):
     base = get_base_model(FLAGS.base_model)
@@ -133,7 +139,7 @@ def main(argv=None):
 
     print(results)
 
-    compare_models(result)
+    summarize(results)
 
 if __name__ == '__main__':
     tf.app.run()
