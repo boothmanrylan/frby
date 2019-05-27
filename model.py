@@ -29,13 +29,13 @@ tf.app.flags.DEFINE_integer('train_steps', 100,
 tf.app.flags.DEFINE_integer('eval_steps', 1000,
                             'Number of steps used during testing')
 tf.app.flags.DEFINE_string('train_pattern',
-                           '/scratch/r/rhlozek/rylan/tfrecords/train-00000*',
+                           '/scratch/r/rhlozek/rylan/tfrecords/train*',
                            'Unix file pattern pointing to training records')
 tf.app.flags.DEFINE_string('eval_pattern',
-                           '/scratch/r/rhlozek/rylan/tfrecords/evaluate-00000*',
+                           '/scratch/r/rhlozek/rylan/tfrecords/evaluate*',
                            'Unix file pattern pointing to test records')
 tf.app.flags.DEFINE_string('val_pattern',
-                           '/scratch/r/rhlozek/rylan/tfrecords/validate-00000*',
+                           '/scratch/r/rhlozek/rylan/tfrecords/validate*',
                            'Unix file pattern pointing to validation records')
 tf.app.flags.DEFINE_string('checkpoint_path',
                            '/scratch/r/rhlozek/rylan/models/default',
@@ -162,13 +162,12 @@ def model_fn(features, labels, mode, params):
     see: https://github.com/tensorflow/tensorflow/issues/17824
     """
     base_model = get_base_model(params["model_name"])
-    model = tf.keras.Sequential([ # this might need to be converted to the functional api
-        base_model(include_top=False, input_shape=SHAPE, weights=None),
-        Flatten(name='flatten'),
-        Dense(4096, activation='relu', name='dense1'),
-        Dense(4096, activation='relu', name='dense2'),
-        Dense(params['n_classes'], activation=None, name='logits')
-    ])
+
+    x = base_model(include_top=False, input_shape=SHAPE, weights=None)(features['image'])
+    x = Flatten()(x)
+    x = Dense(4096, activation='relu')(x)
+    x = Dense(4096, activation='relu')(x)
+    logits = Dense(params['n_classes'], activation=None)(x)
 
     temp_var = tf.get_variable(
         "temp",
@@ -177,7 +176,6 @@ def model_fn(features, labels, mode, params):
         aggregation=tf.VariableAggregation.ONLY_FIRST_REPLICA)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        logits = model(features['image'], training=True)
         optimizer = tf.train.AdamOptimizer()
         if params['n_classes'] > 1:
             loss = tf.losses.softmax_cross_entropy(labels, logits)
@@ -191,7 +189,6 @@ def model_fn(features, labels, mode, params):
         return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op,
                                           training_hooks=hooks)
     elif mode == tf.estimator.ModeKeys.PREDICT:
-        logits = model(features['image'], training=False)
         if params['n_classes'] > 1:
             predicted_classes = tf.argmax(logits, 1)
             predictions = {
@@ -205,7 +202,6 @@ def model_fn(features, labels, mode, params):
             predictions = logits
         return tf.estimator.EstimatorSpec(mode, predictions=predictions)
     elif mode == tf.estimator.ModeKeys.EVAL:
-        logits = model(features['image'], training=False)
         if params['n_classes'] > 1:
             loss = tf.losses.softmax_cross_entropy(labels, logits)
         else:
@@ -254,7 +250,7 @@ def main(argv=None):
     estimator.train(train_input, steps=FLAGS.train_steps)
 
     eval_input = functools.partial(input_fn, FLAGS.eval_pattern, repeat=False)
-    results = estimator.evaluate(eval_input, steps=FLAGS.test_steps)
+    results = estimator.evaluate(eval_input, steps=FLAGS.eval_steps)
 
     print(results)
 
