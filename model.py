@@ -5,6 +5,11 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.applications import ResNet50, MobileNet, VGG16
 from tensorflow.keras.applications import DenseNet121, DenseNet169, DenseNet201
+from tensorflow import contrib
+import tensorflow_datasets as tfds
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dense, Flatten
+
+autograph = contrib.autograph
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -19,20 +24,22 @@ tf.app.flags.DEFINE_integer('num_gpus', 4,
                             'Number of GPUs used for training and testing')
 tf.app.flags.DEFINE_integer('batch_size', 64,
                             'batch size, will be multiplied by NUM_GPUS')
-tf.app.flags.DEFINE_integer('train_steps', 10000,
+tf.app.flags.DEFINE_integer('train_steps', 100,
                             'Number of steps used during training')
-tf.app.flags.DEFINE_integer('test_steps', 10000,
+tf.app.flags.DEFINE_integer('eval_steps', 1000,
                             'Number of steps used during testing')
 tf.app.flags.DEFINE_string('train_pattern',
-                           '/scratch/r/rhlozek/rylan/tfrecords/train*',
+                           '/scratch/r/rhlozek/rylan/tfrecords/train-00000*',
                            'Unix file pattern pointing to training records')
-tf.app.flags.DEFINE_string('test_pattern',
-                           '/scratch/r/rhlozek/rylan/tfrecords/val*',
+tf.app.flags.DEFINE_string('eval_pattern',
+                           '/scratch/r/rhlozek/rylan/tfrecords/evaluate-00000*',
                            'Unix file pattern pointing to test records')
+tf.app.flags.DEFINE_string('val_pattern',
+                           '/scratch/r/rhlozek/rylan/tfrecords/validate-00000*',
+                           'Unix file pattern pointing to validation records')
 tf.app.flags.DEFINE_string('checkpoint_path',
                            '/scratch/r/rhlozek/rylan/models/default',
                            'Directory where model checkpoints will be stored')
-tf.app.flags.DEFINE_integer('seed', 1234, 'Seed for reproducibility')
 tf.app.flags.DEFINE_string('base_model', 'resnet',
                            'Keras application to use as the base model')
 tf.app.flags.DEFINE_boolean('classification', True,
@@ -41,6 +48,7 @@ tf.app.flags.DEFINE_string('summary_file',
                            '/scratch/r/rhlozek/rylan/results_summary.csv',
                            'File to store model comparisons in after each run')
 tf.app.flags.DEFINE_integer('identifier', 1, 'Slurm job submission number')
+tf.app.flags.DEFINE_integer("seed", 12345, "Seed for reproducibility")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -61,6 +69,7 @@ def parse_fn(example):
 
     parsed = tf.parse_single_example(example, example_fmt)
     image = tf.image.decode_image(parsed['image'], channels=1)
+    image = tf.cast(image, tf.float32)
     image.set_shape(SHAPE)
 
     if FLAGS.classification:
@@ -68,16 +77,17 @@ def parse_fn(example):
     else:
         label = parsed['dm']
 
-    return image, label
+    return {'image': image, 'label': label}, label
 
 
-def input_fn(pattern):
+def input_fn(pattern, repeat=True):
     records = tf.data.Dataset.list_files(pattern)
     dataset = records.interleave(tf.data.TFRecordDataset, cycle_length=4)
     dataset = dataset.shuffle(buffer_size=FLAGS.buffer_size)
     dataset = dataset.map(map_func=parse_fn)
     dataset = dataset.batch(FLAGS.batch_size * FLAGS.num_gpus)
-    dataset = dataset.repeat()
+    if repeat:
+        dataset = dataset.repeat()
     return dataset
 
 
@@ -96,11 +106,6 @@ def get_base_model(model_name):
     else:
         return ResNet50
 
-def append_to_csv(data, file):
-    if not os.path.isfile(file):
-        data.to_csv(file, mode='a', index=False, sep=',')
-    else:
-        data.to_csv(file, mode='a', index=False, sep=',', header=False)
 
 def summarize(results_dict):
     if not os.path.exists(FLAGS.summary_file):
@@ -114,38 +119,117 @@ def summarize(results_dict):
     with open(FLAGS.summary_file, 'a') as f:
         results.to_csv(f, header=False)
 
-def build_model():
-    if FLAGS.classification:
-        output_neurons = CLASSES
-        activation = tf.nn.softmax
-        loss = 'categorical_crossentropy'
-        metrics = ['accuracy']
-    else:
-        output_neurons = 1
-        activation = None
-        loss = 'mean_squared_error'
-        metrics = ['mean_squared_error', 'mean_absolute_error']
 
-    base = get_base_model(FLAGS.base_model)
-    model = tf.keras.models.Sequential([
-        base(include_top=False, weights=None, input_shape=SHAPE, pooling='max'),
-        tf.keras.layers.Dense(output_neurons, activation=activation)
+class TemperatureScaler(tf.train.SessionRunHook):
+    def __init__(self, temp_var, model_fn, params, checkpoint_dir, input_fn):
+        self.logits_tensor = tf.placeholder(tf.float32, name='logits_placeholder')
+        self.labels_tensor = tf.placeholder(tf.float32, name='labels_placeholder')
+        #TODO: logits_tensor is "logits_placeholder:0" feed_dict needs replica_x/logits_placeholder
+        # this issue does not exist if the training is not distributed
+
+        self.optim = tf.contrib.opt.ScipyOptimizerInterface(
+            tf.losses.softmax_cross_entropy(
+                onehot_labels=self.labels_tensor,
+                logits=tf.divide(self.logits_tensor, temp_var)
+            ),
+            options={'maxiter': 100},
+            var_list=[temp_var]
+        )
+
+        self.estimator = tf.estimator.Estimator(
+            model_fn=model_fn,
+            params=params,
+            model_dir=checkpoint_dir
+        )
+
+        self.input_fn = input_fn
+
+    def end(self, session):
+        preds = list(self.estimator.predict(self.input_fn, yield_single_examples=False))
+        fd = {self.labels_tensor: np.vstack([p['labels'] for p in preds]),
+              self.logits_tensor: np.vstack([p['logits'] for p in preds])}
+        self.optim.minimize(session, feed_dict=fd)
+        #TODO: temp gets updated but its value does not get passed to temp_var
+        # inside the model
+
+
+def model_fn(features, labels, mode, params):
+    """
+    features is now a dictionary with two keys: images, and labels. Therefore
+    labels is passed to the function twice, the reason for this is that the
+    estimator predict function will always toss labels out and we need labels
+    in order to properly do temperature scaling
+    see: https://github.com/tensorflow/tensorflow/issues/17824
+    """
+    base_model = get_base_model(params["model_name"])
+    model = tf.keras.Sequential([ # this might need to be converted to the functional api
+        base_model(include_top=False, input_shape=SHAPE, weights=None),
+        Flatten(name='flatten'),
+        Dense(4096, activation='relu', name='dense1'),
+        Dense(4096, activation='relu', name='dense2'),
+        Dense(params['n_classes'], activation=None, name='logits')
     ])
 
-    model.compile(loss=loss, optimizer=tf.train.AdamOptimizer(), metrics=metrics)
+    temp_var = tf.get_variable(
+        "temp",
+        shape=[1],
+        initializer=tf.initializers.constant(1.5),
+        aggregation=tf.VariableAggregation.ONLY_FIRST_REPLICA)
 
-    return model
+    if mode == tf.estimator.ModeKeys.TRAIN:
+        logits = model(features['image'], training=True)
+        optimizer = tf.train.AdamOptimizer()
+        if params['n_classes'] > 1:
+            loss = tf.losses.softmax_cross_entropy(labels, logits)
+        else:
+            loss = tf.losses.mean_squared_error(labels, logits)
+        train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
+        hook = TemperatureScaler(temp_var, model_fn, params,
+                                 FLAGS.checkpoint_path,
+                                 params["validation_input"])
+        hooks = [hook] if params["temperature_scaling"] else None
+        return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op,
+                                          training_hooks=hooks)
+    elif mode == tf.estimator.ModeKeys.PREDICT:
+        logits = model(features['image'], training=False)
+        if params['n_classes'] > 1:
+            predicted_classes = tf.argmax(logits, 1)
+            predictions = {
+                'labels': features['label'],
+                'predicted_class': predicted_classes[:, tf.newaxis],
+                'logits': logits,
+                'probs': tf.divide(logits, temp_var),
+                'temp': temp_var.value()
+            }
+        else:
+            predictions = logits
+        return tf.estimator.EstimatorSpec(mode, predictions=predictions)
+    elif mode == tf.estimator.ModeKeys.EVAL:
+        logits = model(features['image'], training=False)
+        if params['n_classes'] > 1:
+            loss = tf.losses.softmax_cross_entropy(labels, logits)
+        else:
+            loss = tf.losses.mean_squared_error(labels, logits)
+        if params['n_classes'] > 1:
+            predictions = tf.argmax(logits, axis=1)
+            decoded_labels = tf.argmax(labels, axis=1)
+            accuracy = tf.metrics.accuracy(labels=decoded_labels,
+                                           predictions=predictions,
+                                           name='acc_op')
+            metrics = {'accuracy': accuracy}
+            tf.summary.scalar('accuracy', accuracy[1])
+        else:
+            mse = tf.keras.metrics.mean_squared_error(labels, logits)
+            mae = tf.keras.metrics.mean_absolute_error(labels, logits)
+            metrics = {'mean_squared_error': mse,
+                       'mean_absolute_error': mae}
+        return tf.estimator.EstimatorSpec(mode, loss=loss, eval_metric_ops=metrics)
 
 
 def main(argv=None):
-    model = build_model()
-
     # log model parameters:
     for flag in FLAGS.flag_values_dict():
         print("{}:\t{}".format(flag, FLAGS[flag].value))
-
-    # log model overview
-    model.summary()
 
     devices = ["/gpu:{}".format(x) for x in range(FLAGS.num_gpus)]
     mirror = tf.distribute.MirroredStrategy(devices)
@@ -155,12 +239,21 @@ def main(argv=None):
                                     model_dir=FLAGS.checkpoint_path,
                                     tf_random_seed=FLAGS.seed)
 
-    estimator = tf.keras.estimator.model_to_estimator(model, config=config)
+    val_input = functools.partial(input_fn, pattern=FLAGS.val_pattern, repeat=False)
+    params={'n_classes': CLASSES if FLAGS.classification else 1,
+            'model_name': FLAGS.base_model,
+            'validation_input': val_input,
+            'temperature_scaling': False}
+    estimator = tf.estimator.Estimator(
+        model_fn=model_fn,
+        params=params,
+        config=config
+    )
 
-    train_input = functools.partial(input_fn, FLAGS.train_pattern)
+    train_input = functools.partial(input_fn, pattern=FLAGS.train_pattern, repeat=True)
     estimator.train(train_input, steps=FLAGS.train_steps)
 
-    eval_input = functools.partial(input_fn, FLAGS.test_pattern)
+    eval_input = functools.partial(input_fn, FLAGS.eval_pattern, repeat=False)
     results = estimator.evaluate(eval_input, steps=FLAGS.test_steps)
 
     print(results)
