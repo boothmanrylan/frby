@@ -16,7 +16,7 @@ tf.logging.set_verbosity(tf.logging.INFO)
 SHAPE = (32, 38, 1)
 CLASSES = 3
 
-summary_keys = ('Slurm Job ID', 'Model Type', 'accuracy', 'mean_squared_error')
+summary = ('accuracy', 'mean_absolute_error', 'Model Type', 'Slurm Job ID')
 
 tf.app.flags.DEFINE_integer('buffer_size', 100,
                             'Size of buffer used for shuffling input data')
@@ -24,7 +24,7 @@ tf.app.flags.DEFINE_integer('num_gpus', 4,
                             'Number of GPUs used for training and testing')
 tf.app.flags.DEFINE_integer('batch_size', 64,
                             'batch size, will be multiplied by NUM_GPUS')
-tf.app.flags.DEFINE_integer('train_steps', 10000,
+tf.app.flags.DEFINE_integer('train_steps', 100,
                             'Number of steps used during training')
 tf.app.flags.DEFINE_integer('eval_steps', 10000,
                             'Number of steps used during testing')
@@ -40,7 +40,7 @@ tf.app.flags.DEFINE_string('val_pattern',
 tf.app.flags.DEFINE_string('checkpoint_path',
                            '/scratch/r/rhlozek/rylan/models/default',
                            'Directory where model checkpoints will be stored')
-tf.app.flags.DEFINE_string('base_model', 'resnet',
+tf.app.flags.DEFINE_string('base_model', 'vgg',
                            'Keras application to use as the base model')
 tf.app.flags.DEFINE_string('summary_file',
                            '/scratch/r/rhlozek/rylan/results_summary.csv',
@@ -111,15 +111,17 @@ def get_base_model(model_name):
         return ResNet50
 
 
-def summarize(results_dict):
+def summarize(dict): # TODO: proper ordering of columns and headers
     if not os.path.exists(FLAGS.summary_file):
-        empty_results = {k:[] for k in summary_keys}
-        empty_results = pd.DataFrame(empty_results)
+        empty_results = {k:[] for k in sorted(summary)}
+        empty_results = pd.DataFrame.from_dict(empty_results)
         empty_results.to_csv(FLAGS.summary_file, header=True)
-    results_dict["Slurm Job ID"] = FLAGS.identifier
-    results_dict["Model Type"] = FLAGS.base_model
-    results_dict = {k:[v] for k,v in results_dict.items() if k in summary_keys}
-    results = pd.DataFrame(results_dict)
+    dict["Slurm Job ID"] = FLAGS.identifier
+    dict["Model Type"] = FLAGS.base_model
+    dict = {
+        k:[v] for k,v in sorted(dict.items(), key=lambda x: x[0]) if k in summary
+    }
+    results = pd.DataFrame.from_dict(dict)
     with open(FLAGS.summary_file, 'a') as f:
         results.to_csv(f, header=False)
 
@@ -167,10 +169,8 @@ def model_fn(features, labels, mode, params):
     """
     base_model = get_base_model(params["model_name"])
 
-    x = base_model(include_top=False, input_shape=SHAPE, weights=None)(features['image'])
-    x = Flatten()(x)
-    x = Dense(4096, activation='relu')(x)
-    x = Dense(4096, activation='relu')(x)
+    x = base_model(include_top=False, input_shape=SHAPE, weights=None,
+                   pooling='max')(features['image'])
     logits = Dense(params['n_classes'], activation=None)(x)
 
     temp_var = tf.get_variable(
@@ -197,13 +197,16 @@ def model_fn(features, labels, mode, params):
             predicted_classes = tf.argmax(logits, 1)
             predictions = {
                 'labels': features['label'],
-                'predicted_class': predicted_classes[:, tf.newaxis],
+                'predicted_class': predicted_classes,
                 'logits': logits,
                 'probs': tf.divide(logits, temp_var),
                 'temp': temp_var.value()
             }
         else:
-            predictions = logits
+            predictions = {
+                'true_dm': features['label'],
+                'predicted_dm': logits
+            }
         return tf.estimator.EstimatorSpec(mode, predictions=predictions)
     elif mode == tf.estimator.ModeKeys.EVAL:
         if params['n_classes'] > 1:
@@ -214,13 +217,15 @@ def model_fn(features, labels, mode, params):
                                            predictions=predictions,
                                            name='acc_op')
             metrics = {'accuracy': accuracy}
-            tf.summary.scalar('accuracy', accuracy[1])
+            tf.summary.scalar('Accuracy', accuracy[1])
         else:
             loss = tf.losses.mean_squared_error(labels, logits)
             mse = tf.metrics.mean_squared_error(labels, logits)
             mae = tf.metrics.mean_absolute_error(labels, logits)
             metrics = {'mean_squared_error': mse,
                        'mean_absolute_error': mae}
+            tf.summary.scalar('Mean Absolute Error', mae[1])
+            tf.summary.scalar('Mean Squared Error', mse[1])
         return tf.estimator.EstimatorSpec(mode, loss=loss, eval_metric_ops=metrics)
 
 
@@ -278,6 +283,7 @@ def main(argv=None):
         classification=True,
         repeat=False)
     clf_results = classifier.evaluate(clf_eval_input, steps=FLAGS.eval_steps)
+    clf_preds = list(classifier.predict(clf_eval_input, yield_single_examples=False))
 
     reg_eval_input = functools.partial(
         input_fn,
@@ -285,11 +291,22 @@ def main(argv=None):
         classification=False,
         repeat=False)
     reg_results = regressor.evaluate(reg_eval_input, steps=FLAGS.eval_steps)
+    reg_preds = list(regressor.predict(reg_eval_input, yield_single_examples=False))
 
     print('classification results: {}'.format(clf_results))
     print('regression results: {}'.format(reg_results))
 
     summarize({**clf_results, **reg_results})
+
+    results = {
+        'True Class': [np.argmax(p['labels']) for p in clf_preds],
+        'Predicted Class': [p['predicted_class'][0] for p in clf_preds],
+        'True DM': [p['true_dm'][0][0] for p in reg_preds],
+        'Predicted DM': [p['predicted_dm'][0][0] for p in reg_preds]
+    }
+    results_df = pd.DataFrame(results)
+    results_df.to_csv(FLAGS.checkpoint_path + '/results.csv', index=False)
+
 
 if __name__ == '__main__':
     tf.app.run()
