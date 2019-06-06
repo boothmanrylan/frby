@@ -73,6 +73,7 @@ def parse_fn(example, classification):
     if classification:
         label = tf.one_hot(parsed['label'], CLASSES)
     else:
+        # reshape so that shape matches model output
         label = tf.reshape(parsed['dm'], [1])
 
     return {'image': image, 'label': label}, label
@@ -111,7 +112,7 @@ def get_base_model(model_name):
         return ResNet50
 
 
-def summarize(dict): # TODO: proper ordering of columns and headers
+def summarize(dict):
     if not os.path.exists(FLAGS.summary_file):
         empty_results = {k:[] for k in sorted(summary)}
         empty_results = pd.DataFrame.from_dict(empty_results)
@@ -127,7 +128,25 @@ def summarize(dict): # TODO: proper ordering of columns and headers
 
 
 class TemperatureScaler(tf.train.SessionRunHook):
-    def __init__(self, temp_var, model_fn, params, checkpoint_dir, input_fn):
+    """
+    SessionRunHook that executes at end of training and learns the correct
+    value to temperature scale.
+    TODO: the final temperature value is not updated in the graph
+    """
+    def __init__(self, temp_var, model_fn, params, model_dir, input_fn):
+        """
+        Args:
+            temp_var: tf.Variable, variable holding the temperature value
+            model_fn: function, passed to tf.estimator.Estimator constructor,
+                      should be the same as used to construct the original
+                      estimator.
+            params: dict, passed to tf.estimator.Estimator constructor, should
+                    be the same as used to construct the original estimator.
+            model_dir: string, passed to tf.estimator.Estimator, should be the
+                       same as used to construct the original estimator.
+            input_fn: function, passed estimator.predict method, should return
+                      a dataset containing validation data.
+        """
         self.logits_tensor = tf.placeholder(tf.float32, name='logits_placeholder')
         self.labels_tensor = tf.placeholder(tf.float32, name='labels_placeholder')
         #TODO: logits_tensor is "logits_placeholder:0" feed_dict needs replica_x/logits_placeholder
@@ -142,10 +161,12 @@ class TemperatureScaler(tf.train.SessionRunHook):
             var_list=[temp_var]
         )
 
+        # loads an already trained estimator defined by model_fn + params with
+        # checkpoints stored in model_dir
         self.estimator = tf.estimator.Estimator(
             model_fn=model_fn,
             params=params,
-            model_dir=checkpoint_dir
+            model_dir=model_dir
         )
 
         self.input_fn = input_fn
@@ -204,8 +225,8 @@ def model_fn(features, labels, mode, params):
             }
         else:
             predictions = {
-                'true_dm': features['label'],
-                'predicted_dm': logits
+                'true_dm': tf.squeeze(features['label']),
+                'predicted_dm': tf.squeeze(logits)
             }
         return tf.estimator.EstimatorSpec(mode, predictions=predictions)
     elif mode == tf.estimator.ModeKeys.EVAL:
@@ -299,10 +320,10 @@ def main(argv=None):
     summarize({**clf_results, **reg_results})
 
     results = {
-        'True Class': [np.argmax(p['labels']) for p in clf_preds],
-        'Predicted Class': [p['predicted_class'][0] for p in clf_preds],
-        'True DM': [p['true_dm'][0][0] for p in reg_preds],
-        'Predicted DM': [p['predicted_dm'][0][0] for p in reg_preds]
+        'True Class': np.hstack([np.argmax(p['labels'], axis=1) for p in clf_preds]),
+        'Predicted Class': np.hstack([p['predicted_class'] for p in clf_preds]),
+        'True DM': np.hstack([p['true_dm'] for p in reg_preds]),
+        'Predicted DM': np.hstack([p['predicted_dm'] for p in reg_preds])
     }
     results_df = pd.DataFrame(results)
     results_df.to_csv(FLAGS.checkpoint_path + '/results.csv', index=False)
