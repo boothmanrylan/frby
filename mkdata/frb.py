@@ -45,14 +45,13 @@ class FRB(object):
         background :    The background the pulse will be injected into.
         max_size :      The size to reduce/bin the data to in time.
         """
-        # TODO: If input are not quantities, give them default units
-        self.t_ref = t_ref.to(u.ms)
+        # TODO: If inputs are not quantities, give them default units
         self.scintillate = scintillate
         self.bandwidth = (max(freq) - min(freq)).to(u.MHz)
         self.max_size = max_size
 
         if f_ref is None:
-            f_ref = (max(freq.value)*0.9, min(freq.value)*1.1) * freq.unit
+            f_ref = (max(freq.value)*0.99, min(freq.value)*1.01) * freq.unit
             f_ref = random.uniform(*f_ref)
         self.f_ref = f_ref.to(u.MHz)
 
@@ -63,7 +62,13 @@ class FRB(object):
             self.rate = rate
             self.delta_t = delta_t.to(u.ms)
 
-        self.make_background(background, NFREQ, NTIME)
+        if t_ref is None:
+            half_time = NTIME * self.delta_t.value // 2
+            t_ref = (-half_time, 1.9 * half_time) * u.ms
+            t_ref = random.uniform(*t_ref)
+        self.t_ref = t_ref.to(u.ms)
+
+        self.make_background(background, NFREQ, NTIME, bg_mean, bg_std)
 
         self.stds = np.std(self.background)
 
