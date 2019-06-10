@@ -284,6 +284,15 @@ class FRB(object):
         else:
             plt.savefig(save)
 
+
+    def dedisperse(self):
+        output = np.copy(self.frb)
+        for i in range(output.shape[0]):
+            output[i, :] = np.roll(output[i, :], int(self.arrival_indices[i]*-1))
+        plt.imshow(output)
+        plt.show()
+
+
     def save(self, output):
         """
         Save the simulated FRB as a binary .npy file. If output already exists,
