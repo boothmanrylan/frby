@@ -219,9 +219,8 @@ class FRB(object):
         pulse_prof = signal.fftconvolve(gaus_prof, scat_prof)[:self.NTIME]
         pulse_prof *= self.fluence.value
         pulse_prof *= (f / self.f_ref).value ** self.spec_ind
-        # pulse_prof /= (pulse_prof.max()*self.stds)
+        pulse_prof /= (pulse_prof.max()*self.stds)
         # pulse_prof /= (self.width / self.delta_t.value)
-
         return pulse_prof
 
     def simulate_frb(self):
@@ -230,8 +229,10 @@ class FRB(object):
         Includes frequency-dependent width (smearing, scattering, etc.) and
         amplitude (scintillation, spectral index).
         """
-        data = np.copy(self.background)
         tmid = self.NTIME//2
+
+        self.signal = np.zeros_like(self.background)
+        self.arrival_indices = np.zeros(self.NFREQ)
 
         if self.scintillate:
             scint_amp = self.scintillation(self.freq)
@@ -239,6 +240,7 @@ class FRB(object):
         for ii, f in enumerate(self.freq):
             # calculate the arrival time index
             t = int(self.arrival_time(f) / self.delta_t)
+            self.arrival_indices[ii] = t
 
             # ensure that edges of data are not crossed
             if abs(t) >= tmid:
@@ -249,27 +251,16 @@ class FRB(object):
             if self.scintillate is True:
                 p *= scint_amp[ii]
 
-            data[ii] += p
-        return data
+            self.signal[ii] += p
 
-    # TODO: Make this more efficient 
-    def dm_transform(self, data, NDM=50):
-        dm = np.linspace(-self.dm, self.dm, NDM)
-        dm_data = np.zeros([NDM, self.NTIME])
+        self.snr = np.max(self.signal) / np.median(self.background)
+        return self.background + self.signal
 
-        for ii, dm in enumerate(dm):
-            for jj, f in enumerate(self.freq):
-                t = int(self.arrival_time(f) / self.delta_t)
-                data_rot = np.roll(data[jj], t, axis=-1)
-                dm_data[ii] += data_rot
-
-        return data
 
     def plot(self, save=None):
         f, axis = plt.subplots(1, 2, sharex=True, sharey=True, figsize=(18, 30))
-        axis[0].imshow(self.background, vmin=-1.0, vmax=1.0, interpolation="nearest",
-                       aspect="auto")
-        axis[0].set_title("Background Noise")
+        axis[0].imshow(self.signal, interpolation="nearest", aspect="auto")
+        axis[0].set_title("Simulated FRB")
         axis[0].set_xlabel("Time ({})".format(self.delta_t.unit))
         axis[0].set_ylabel("Frequency ({})".format(self.freq.unit))
         yticks = np.linspace(0, self.NFREQ, 10)
@@ -282,10 +273,9 @@ class FRB(object):
         axis[0].set_yticklabels(ylabels)
         axis[0].set_xticks(xticks)
         axis[0].set_xticklabels(xlabels)
-        axis[1].imshow(self.frb, vmin=-1.0, vmax=1.0, interpolation="nearest",
-                   aspect="auto")
-        axis[1].set_title("Simulated FRB")
-        axis[1].set_xlabel("Time (ms)")
+        axis[1].imshow(self.frb, interpolation="nearest", aspect="auto")
+        axis[1].set_title("After Injection")
+        axis[1].set_xlabel("Time ({})".format(self.delta_t.unit))
         axis[1].set_xticks(xticks)
         axis[1].set_xticklabels(xlabels)
 
@@ -324,19 +314,9 @@ class FRB(object):
                   'dm': self.dm, 'fluence': self.fluence, 'width': self.width,
                   'spec_ind': self.spec_ind, 'scat_factor': self.scat_factor,
                   'max_freq': max(self.freq), 'min_freq': min(self.freq),
-                  'files': self.files, 'class': 'frb'}
+                  'files': self.files, 'class': 'frb', 'snr': self.snr}
         return params
 
-    def get_headers(self):
-        params = self.get_parameters()
-        headers = sorted(params.keys())
-        return headers
-
-    def get_params(self):
-        params = self.get_parameters()
-        headers = self.get_headers()
-        params = [params[x] for x in headers]
-        return params
 
 if __name__ == "__main__":
     d = '/scratch/r/rhlozek/rylan/aro_rfi/000010'
