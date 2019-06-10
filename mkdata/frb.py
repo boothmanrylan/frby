@@ -151,9 +151,7 @@ class FRB(object):
         return k_dm * self.dm * (f**-2)
 
     def arrival_time(self, f):
-        t = self.disp_delay(f)
-        t = t - self.disp_delay(self.f_ref)
-        return self.t_ref + t
+        return self.t_ref + self.disp_delay(f) - self.disp_delay(self.f_ref)
 
     def calc_width(self, width):
         """
