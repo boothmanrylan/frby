@@ -22,12 +22,13 @@ class FRB(object):
     Based on https://github.com/liamconnor/single_pulse_ml which is in turn
     based on https://github.com/kiyo-masui/burst_search
     """
-    def __init__(self, t_ref=0*u.ms, f_ref=0.6*u.GHz, NFREQ=1024, NTIME=2**15,
-                 delta_t=0.16*u.ms, dm=(100, 500)*(u.pc/u.cm**3),
-                 fluence=(0.02, 150)*(u.Jy*u.ms), freq=(0.8, 0.4)*u.GHz,
-                 rate=(0.4/1024)*u.GHz, scat_factor=(-5, -4),
-                 width=(0.05, 30)*u.ms, scintillate=True, spec_ind=(-10, 15),
-                 background=None, max_size=2**15):
+    def __init__(self, t_ref=0*u.ms, f_ref=600*u.MHz, NFREQ=1024, NTIME=1024,
+                 delta_t=0.16*u.ms, dm=(50, 3750)*(u.pc/u.cm**3),
+                 fluence=(0.02, 200)*(u.Jy*u.ms), freq=(0.8, 0.4)*u.GHz,
+                 rate=1000*u.Hz, scat_factor=(-5, -3),
+                 #rate=(0.4/1024)*u.GHz, scat_factor=(-5, -4),
+                 width=(0.05, 40)*u.ms, scintillate=True, spec_ind=(-10, 10),
+                 background=None, max_size=2**15, bg_mean=1, bg_std=1):
         """
         t_ref :         The reference time used when computing the DM.
         f_ref :         The reference frequency used when computing the DM.
@@ -110,13 +111,9 @@ class FRB(object):
         self.attributes = self.get_parameters()
 
     def __repr__(self):
-        repr = str(self.get_parameters())
-        repr = repr[1:-1]
-        repr = repr.split(', ')
-        repr = '\n'.join(repr)
-        return repr
+        return '\n'.join(str(self.get_parameters())[1:-1].split(', '))
 
-    def make_background(self, background, NFREQ, NTIME):
+    def make_background(self, background, NFREQ, NTIME, mean, std):
         try: # background is a file or list of files
              data, files, rate = read_vdif(background, self.rate)
              self.background = data
@@ -132,7 +129,7 @@ class FRB(object):
                 self.NTIME = background.shape[1]
                 self.files = ''
             except AttributeError: # background isn't an array
-                self.background = np.random.normal(0, 1, size=(NFREQ, NTIME))
+                self.background = np.random.normal(mean, std, size=(NFREQ, NTIME))
                 self.NFREQ = NFREQ
                 self.NTIME = NTIME
                 self.files = ''
