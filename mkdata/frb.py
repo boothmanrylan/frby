@@ -22,12 +22,13 @@ class FRB(object):
     Based on https://github.com/liamconnor/single_pulse_ml which is in turn
     based on https://github.com/kiyo-masui/burst_search
     """
-    def __init__(self, t_ref=0*u.ms, f_ref=0.6*u.GHz, NFREQ=1024, NTIME=2**15,
-                 delta_t=0.16*u.ms, dm=(100, 500)*(u.pc/u.cm**3),
-                 fluence=(0.02, 150)*(u.Jy*u.ms), freq=(0.8, 0.4)*u.GHz,
-                 rate=(0.4/1024)*u.GHz, scat_factor=(-5, -4),
-                 width=(0.05, 30)*u.ms, scintillate=True, spec_ind=(-10, 15),
-                 background=None, max_size=2**15):
+    def __init__(self, t_ref=0*u.ms, f_ref=600*u.MHz, NFREQ=1024, NTIME=8192,
+                 delta_t=0.16*u.ms, dm=(50, 2500)*(u.pc/u.cm**3),
+                 fluence=(0.02, 200)*(u.Jy*u.ms), freq=(0.8, 0.4)*u.GHz,
+                 rate=1000*u.Hz, scat_factor=(-5, -3),
+                 #rate=(0.4/1024)*u.GHz, scat_factor=(-5, -4),
+                 width=(0.05, 40)*u.ms, scintillate=True, spec_ind=(-10, 10),
+                 background=None, max_size=2**15, bg_mean=1, bg_std=1):
         """
         t_ref :         The reference time used when computing the DM.
         f_ref :         The reference frequency used when computing the DM.
@@ -45,14 +46,13 @@ class FRB(object):
         background :    The background the pulse will be injected into.
         max_size :      The size to reduce/bin the data to in time.
         """
-        # TODO: If input are not quantities, give them default units
-        self.t_ref = t_ref.to(u.ms)
+        # TODO: If inputs are not quantities, give them default units
         self.scintillate = scintillate
         self.bandwidth = (max(freq) - min(freq)).to(u.MHz)
         self.max_size = max_size
 
         if f_ref is None:
-            f_ref = (max(freq.value)*0.9, min(freq.value)*1.1) * freq.unit
+            f_ref = (max(freq.value)*0.99, min(freq.value)*1.01) * freq.unit
             f_ref = random.uniform(*f_ref)
         self.f_ref = f_ref.to(u.MHz)
 
@@ -63,7 +63,12 @@ class FRB(object):
             self.rate = rate
             self.delta_t = delta_t.to(u.ms)
 
-        self.make_background(background, NFREQ, NTIME)
+        if t_ref is None:
+            t_ref = (-.9 * NTIME, .9 * NTIME) * u.ms
+            t_ref = random.uniform(*t_ref)
+        self.t_ref = t_ref.to(u.ms)
+
+        self.make_background(background, NFREQ, NTIME, bg_mean, bg_std)
 
         self.stds = np.std(self.background)
 
@@ -105,13 +110,9 @@ class FRB(object):
         self.attributes = self.get_parameters()
 
     def __repr__(self):
-        repr = str(self.get_parameters())
-        repr = repr[1:-1]
-        repr = repr.split(', ')
-        repr = '\n'.join(repr)
-        return repr
+        return '\n'.join(str(self.get_parameters())[1:-1].split(', '))
 
-    def make_background(self, background, NFREQ, NTIME):
+    def make_background(self, background, NFREQ, NTIME, mean, std):
         try: # background is a file or list of files
              data, files, rate = read_vdif(background, self.rate)
              self.background = data
@@ -127,7 +128,7 @@ class FRB(object):
                 self.NTIME = background.shape[1]
                 self.files = ''
             except AttributeError: # background isn't an array
-                self.background = np.random.normal(0, 1, size=(NFREQ, NTIME))
+                self.background = np.random.normal(mean, std, size=(NFREQ, NTIME))
                 self.NFREQ = NFREQ
                 self.NTIME = NTIME
                 self.files = ''
@@ -140,6 +141,7 @@ class FRB(object):
                 self.background = self.background.mean(1)
                 self.delta_t = self.NTIME * self.delta_t / width
                 self.NTIME = width
+        self.background = self.background.astype(np.float32)
 
     def disp_delay(self, f):
         """
@@ -149,9 +151,7 @@ class FRB(object):
         return k_dm * self.dm * (f**-2)
 
     def arrival_time(self, f):
-        t = self.disp_delay(f)
-        t = t - self.disp_delay(self.f_ref)
-        return self.t_ref + t
+        return self.t_ref + self.disp_delay(f) - self.disp_delay(self.f_ref)
 
     def calc_width(self, width):
         """
@@ -219,9 +219,8 @@ class FRB(object):
         pulse_prof = signal.fftconvolve(gaus_prof, scat_prof)[:self.NTIME]
         pulse_prof *= self.fluence.value
         pulse_prof *= (f / self.f_ref).value ** self.spec_ind
-        # pulse_prof /= (pulse_prof.max()*self.stds)
-        # pulse_prof /= (self.width / self.delta_t.value)
-
+        pulse_prof /= (pulse_prof.max()*self.stds)
+        pulse_prof /= (self.width / self.delta_t.value)
         return pulse_prof
 
     def simulate_frb(self):
@@ -230,8 +229,10 @@ class FRB(object):
         Includes frequency-dependent width (smearing, scattering, etc.) and
         amplitude (scintillation, spectral index).
         """
-        data = np.copy(self.background)
         tmid = self.NTIME//2
+
+        self.signal = np.zeros_like(self.background)
+        self.arrival_indices = np.zeros(self.NFREQ)
 
         if self.scintillate:
             scint_amp = self.scintillation(self.freq)
@@ -239,6 +240,7 @@ class FRB(object):
         for ii, f in enumerate(self.freq):
             # calculate the arrival time index
             t = int(self.arrival_time(f) / self.delta_t)
+            self.arrival_indices[ii] = t
 
             # ensure that edges of data are not crossed
             if abs(t) >= tmid:
@@ -249,27 +251,16 @@ class FRB(object):
             if self.scintillate is True:
                 p *= scint_amp[ii]
 
-            data[ii] += p
-        return data
+            self.signal[ii] += p
 
-    # TODO: Make this more efficient 
-    def dm_transform(self, data, NDM=50):
-        dm = np.linspace(-self.dm, self.dm, NDM)
-        dm_data = np.zeros([NDM, self.NTIME])
+        self.snr = np.sqrt(np.sum(self.signal)) / np.median(self.background)
+        return self.background + self.signal
 
-        for ii, dm in enumerate(dm):
-            for jj, f in enumerate(self.freq):
-                t = int(self.arrival_time(f) / self.delta_t)
-                data_rot = np.roll(data[jj], t, axis=-1)
-                dm_data[ii] += data_rot
-
-        return data
 
     def plot(self, save=None):
         f, axis = plt.subplots(1, 2, sharex=True, sharey=True, figsize=(18, 30))
-        axis[0].imshow(self.background, vmin=-1.0, vmax=1.0, interpolation="nearest",
-                       aspect="auto")
-        axis[0].set_title("Background Noise")
+        axis[0].imshow(self.signal, interpolation="nearest", aspect="auto")
+        axis[0].set_title("Simulated FRB DM:{:.3f}".format(self.dm))
         axis[0].set_xlabel("Time ({})".format(self.delta_t.unit))
         axis[0].set_ylabel("Frequency ({})".format(self.freq.unit))
         yticks = np.linspace(0, self.NFREQ, 10)
@@ -282,10 +273,9 @@ class FRB(object):
         axis[0].set_yticklabels(ylabels)
         axis[0].set_xticks(xticks)
         axis[0].set_xticklabels(xlabels)
-        axis[1].imshow(self.frb, vmin=-1.0, vmax=1.0, interpolation="nearest",
-                   aspect="auto")
-        axis[1].set_title("Simulated FRB")
-        axis[1].set_xlabel("Time (ms)")
+        axis[1].imshow(self.dedisperse(), interpolation='nearest', aspect='auto')
+        axis[1].set_title("Dedispersed S/N: {:.2f}".format(self.snr))
+        axis[1].set_xlabel("Time ({})".format(self.delta_t.unit))
         axis[1].set_xticks(xticks)
         axis[1].set_xticklabels(xlabels)
 
@@ -293,6 +283,28 @@ class FRB(object):
             plt.show()
         else:
             plt.savefig(save)
+
+
+    def dedisperse(self):
+        output = np.copy(self.frb)
+        for i in range(output.shape[0]):
+            output[i, :] = np.roll(output[i, :], int(self.arrival_indices[i]*-1))
+        return output
+
+
+    def normalize(self, dedisperse_before=False, dedisperse_after=False):
+        if dedisperse_before and not dedisperse_after:
+            output = self.dedisperse()
+        else:
+            output = np.copy(self.frb)
+        std = np.std(output, axis=1, keepdims=True)
+        std = np.where(std != 0, std, 1)
+        output = (output - np.mean(output, axis=1, keepdims=True)) / std
+        if not dedisperse_before and dedisperse_after:
+            for i in range(output.shape[0]):
+                output[i, :] = np.roll(output[i, :], int(self.arrival_indices[i]*-1))
+        return output
+
 
     def save(self, output):
         """
@@ -324,19 +336,9 @@ class FRB(object):
                   'dm': self.dm, 'fluence': self.fluence, 'width': self.width,
                   'spec_ind': self.spec_ind, 'scat_factor': self.scat_factor,
                   'max_freq': max(self.freq), 'min_freq': min(self.freq),
-                  'files': self.files, 'class': 'frb'}
+                  'files': self.files, 'class': 'frb', 'snr': self.snr}
         return params
 
-    def get_headers(self):
-        params = self.get_parameters()
-        headers = sorted(params.keys())
-        return headers
-
-    def get_params(self):
-        params = self.get_parameters()
-        headers = self.get_headers()
-        params = [params[x] for x in headers]
-        return params
 
 if __name__ == "__main__":
     d = '/scratch/r/rhlozek/rylan/aro_rfi/000010'
