@@ -22,8 +22,8 @@ class FRB(object):
     Based on https://github.com/liamconnor/single_pulse_ml which is in turn
     based on https://github.com/kiyo-masui/burst_search
     """
-    def __init__(self, t_ref=0*u.ms, f_ref=600*u.MHz, NFREQ=1024, NTIME=1024,
-                 delta_t=0.16*u.ms, dm=(50, 3750)*(u.pc/u.cm**3),
+    def __init__(self, t_ref=0*u.ms, f_ref=600*u.MHz, NFREQ=1024, NTIME=8192,
+                 delta_t=0.16*u.ms, dm=(50, 2500)*(u.pc/u.cm**3),
                  fluence=(0.02, 200)*(u.Jy*u.ms), freq=(0.8, 0.4)*u.GHz,
                  rate=1000*u.Hz, scat_factor=(-5, -3),
                  #rate=(0.4/1024)*u.GHz, scat_factor=(-5, -4),
@@ -64,8 +64,7 @@ class FRB(object):
             self.delta_t = delta_t.to(u.ms)
 
         if t_ref is None:
-            half_time = NTIME * self.delta_t.value // 2
-            t_ref = (-half_time, 1.9 * half_time) * u.ms
+            t_ref = (-.9 * NTIME, .9 * NTIME) * u.ms
             t_ref = random.uniform(*t_ref)
         self.t_ref = t_ref.to(u.ms)
 
@@ -142,6 +141,7 @@ class FRB(object):
                 self.background = self.background.mean(1)
                 self.delta_t = self.NTIME * self.delta_t / width
                 self.NTIME = width
+        self.background = self.background.astype(np.float32)
 
     def disp_delay(self, f):
         """
@@ -220,7 +220,7 @@ class FRB(object):
         pulse_prof *= self.fluence.value
         pulse_prof *= (f / self.f_ref).value ** self.spec_ind
         pulse_prof /= (pulse_prof.max()*self.stds)
-        # pulse_prof /= (self.width / self.delta_t.value)
+        pulse_prof /= (self.width / self.delta_t.value)
         return pulse_prof
 
     def simulate_frb(self):
@@ -253,14 +253,14 @@ class FRB(object):
 
             self.signal[ii] += p
 
-        self.snr = np.max(self.signal) / np.median(self.background)
+        self.snr = np.sqrt(np.sum(self.signal)) / np.median(self.background)
         return self.background + self.signal
 
 
     def plot(self, save=None):
         f, axis = plt.subplots(1, 2, sharex=True, sharey=True, figsize=(18, 30))
         axis[0].imshow(self.signal, interpolation="nearest", aspect="auto")
-        axis[0].set_title("Simulated FRB")
+        axis[0].set_title("Simulated FRB DM:{:.3f}".format(self.dm))
         axis[0].set_xlabel("Time ({})".format(self.delta_t.unit))
         axis[0].set_ylabel("Frequency ({})".format(self.freq.unit))
         yticks = np.linspace(0, self.NFREQ, 10)
@@ -273,8 +273,8 @@ class FRB(object):
         axis[0].set_yticklabels(ylabels)
         axis[0].set_xticks(xticks)
         axis[0].set_xticklabels(xlabels)
-        axis[1].imshow(self.frb, interpolation="nearest", aspect="auto")
-        axis[1].set_title("After Injection")
+        axis[1].imshow(self.dedisperse(), interpolation='nearest', aspect='auto')
+        axis[1].set_title("Dedispersed S/N: {:.2f}".format(self.snr))
         axis[1].set_xlabel("Time ({})".format(self.delta_t.unit))
         axis[1].set_xticks(xticks)
         axis[1].set_xticklabels(xlabels)
@@ -289,8 +289,21 @@ class FRB(object):
         output = np.copy(self.frb)
         for i in range(output.shape[0]):
             output[i, :] = np.roll(output[i, :], int(self.arrival_indices[i]*-1))
-        plt.imshow(output)
-        plt.show()
+        return output
+
+
+    def normalize(self, dedisperse_before=False, dedisperse_after=False):
+        if dedisperse_before and not dedisperse_after:
+            output = self.dedisperse()
+        else:
+            output = np.copy(self.frb)
+        std = np.std(output, axis=1, keepdims=True)
+        std = np.where(std != 0, std, 1)
+        output = (output - np.mean(output, axis=1, keepdims=True)) / std
+        if not dedisperse_before and dedisperse_after:
+            for i in range(output.shape[0]):
+                output[i, :] = np.roll(output[i, :], int(self.arrival_indices[i]*-1))
+        return output
 
 
     def save(self, output):
