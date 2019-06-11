@@ -21,6 +21,7 @@ In order to run model.py on the SOSCIP GPU cluster:
     * Change line 6 so the output points to a file in your scratch directory
     * Change line 14 from `source activate astro` to `source activate <ENV_NAME>`
     * Change line 20 to the path to where model.py is located in your home directory.
+    * Change line 21 to a path where you would like to checkpoint/store the trained model
 1. Submit job: `sbatch frbsearch.sh`
 
 ## File descriptions
