@@ -21,6 +21,78 @@ class FRB(object):
     Generate a simulated fast radio burst.
     Based on https://github.com/liamconnor/single_pulse_ml which is in turn
     based on https://github.com/kiyo-masui/burst_search
+
+    All parameters that are quantities can be passed as unitless floats, which
+    will be converted to quantities with the default units.
+
+    If any of t_ref, f_ref, scintillate, or window are passed as "None", a
+    uniformly sampled random value will be assigned to them from a range that
+    makes sense with respect to the other parameters.
+
+    Any of dm, fluence, scat_factor, width, and spec_ind can be passed as a
+    single value or a 2-tuple of values. If one of them is passed as a tuple a
+    final value will be drawn uniformly from the range in the tuple and
+    assigned to the parameter.
+
+    Any parameters whose final value is determined randomly will have that
+    final value saved in the parameter, not the range the value was drawn from.
+
+    Parameters
+    ----------
+    t_ref : Quantity (default units: ms)
+        The reference time used when determining where the burst is located.
+    f_ref : Quantity (default units: MHz)
+        The reference frequency used when determining where the burst is
+        located.
+    NFREQ : int
+        The number of frequency bins.
+    NTIME : int
+        The number of time bins.
+    delta_t : Quantity (default units: ms)
+        The time step between two time bins.
+    dm : Quantity (default units: pc cm^-3, default range: 50 - 2500)
+        The dispersion measure (DM) of the pulse.
+    fluence : Quantity (default units: Jy ms, default range: 0.02 - 200)
+        The fluence of the pulse.
+    freq : tuple of Quantities (MHz)
+        The maximum and minimum frequency values.
+    rate : Quantity (default units: MHz)
+        The rate at which samples were taken.
+    scat_factor : int (default range: -5 - -3),
+        Used in determing how much scatter occurs in the burst.
+    width : Quantity (default units: ms, default range: 0.05 - 40)
+        The width in time of the pulse.
+    scintillate : bool
+        If true scintills are added to the pulse.
+    spec_ind : int (default range: -10 - 10)
+        the spectral index of the burst.
+    background : vdif file, list of vdif files, numpy ndarray
+        See _see_background
+    max_size : int
+        The size to reduce/bin the data to in time.
+    bg_mean : float
+        Mean used when creating gaussian background.
+    bg_std : float
+        Standard deviation used when creating gaussian background.
+    window : bool
+        If true a "window" of random size is placed on the burst.
+    normalize : bool
+        If true frequency bands are normalized to have 0 mean and 1 std
+
+    Attributes
+    ----------
+    frb : ndarray
+        The simulated frb in the background noise.
+    background : ndarray
+        The background noise.
+    signal : ndarray
+        The simulated frb without any background noise.
+    bandwith : Quantity
+        The frequency range of the samples.
+    snr : float
+        The approximate signal-to-noise ratio of the burst.
+    attributes : dict
+        Key parameters used to make the simulation.
     """
     def __init__(self, t_ref=0*u.ms, f_ref=600*u.MHz, NFREQ=1024, NTIME=8192,
                  delta_t=0.16*u.ms, dm=(50, 2500)*(u.pc/u.cm**3),
