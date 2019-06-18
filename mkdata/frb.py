@@ -528,20 +528,93 @@ class FRB(object):
 
         np.save(output, self.frb)
 
-    def get_parameters(self):
+    def _get_parameters(self):
         """
         Return the parameters of the event as a dictionary.
         """
         params = {'t_ref': self.t_ref, 'scintillate': self.scintillate,
                   'bandwidth': self.bandwidth, 'f_ref': self.f_ref,
                   'rate': self.rate, 'delta_t': self.delta_t,
-                  'NFREQ': self.NFREQ, 'NTIME': self.NTIME, 'stds': self.stds,
-                  'dm': self.dm, 'fluence': self.fluence, 'width': self.width,
+                  'NFREQ': self.NFREQ, 'NTIME': self.NTIME, 'dm': self.dm,
+                  'fluence': self.fluence, 'width': self.width,
                   'spec_ind': self.spec_ind, 'scat_factor': self.scat_factor,
                   'max_freq': max(self.freq), 'min_freq': min(self.freq),
-                  'files': self.files, 'class': 'frb', 'snr': self.snr}
+                  'files': self.files, 'class': 'frb', 'snr': self.snr,
+                  'window': self.window}
         return params
 
+
+    def _normalize(self):
+        std = np.std(self.frb, axis=1, keepdims=True)
+        std = np.where(std != 0, std, 1)
+        return ((self.frb - np.mean(self.frb, axis=1, keepdims=True)) / std)
+
+    def _get_snr(self):
+        if np.sum(self.background) == 0:
+            return np.inf
+        else:
+            return np.sqrt(np.sum(self.signal**2))/np.median(self.background)
+
+
+def apply_window(A):
+    # location of max value in each row, will follow the frb path
+    centres = list(zip(np.arange(A.shape[0]), np.argmax(A, axis=1)))
+
+    # remove edges, ensuring window is not centered at top/bottom edges of sample
+    centres = centres[int(0.1*len(centres)):-int(0.1*len(centres))]
+
+    # remove locations close to left/right edges of sample
+    centres = [x for x in centres if
+               x[1] > 0.1 * A.shape[1] and x[1] < 0.9 * A.shape[1]]
+
+    # remove locations where burst does not exist
+    centres = [x for x in centres if A[x] > 0]
+
+    # nothing to be done; no valid window locations
+    if len(centres) == 0:
+        return A
+
+    centre = centres[np.random.randint(len(centres))]
+
+    # create window dimensions randomly
+    max_left_width = max(0, centre[1] - int(0.05 * A.shape[1]))
+    left = np.random.randint(0, max_left_width)
+
+    min_right_width = min(A.shape[1], centre[1] + int(0.05 * A.shape[1]))
+    right = np.random.randint(min_right_width, A.shape[1])
+
+    max_top_width = max(0, centre[0] - int(0.05 * A.shape[0]))
+    top = np.random.randint(0, max_top_width)
+
+    min_bottom_width = min(A.shape[0], centre[0] + int(0.05 * A.shape[0]))
+    bottom = np.random.randint(min_bottom_width, A.shape[0])
+
+    def decay(width, reverse=False):
+        x = np.arange(width) + 1
+        x = 1 / (x**2)
+        if reverse:
+            x = np.flip(x)
+        return x
+
+    window = np.ones_like(A)
+
+    left_decay = np.vstack([decay(left, True)] * window.shape[0])
+    window[:, :left] *= left_decay
+
+    right_decay = np.vstack(
+        [decay(window.shape[1] - right)] * window.shape[0]
+    )
+    window[:, right:] *= right_decay
+
+    top_decay = np.vstack([decay(top, True)] * window.shape[1])
+    window[:top, :] *= top_decay.T
+
+    bottom_decay = np.vstack(
+        [decay(window.shape[0] - bottom)] * window.shape[1]
+    )
+    window[bottom:, :] *= bottom_decay.T
+
+    return A * window
 
 if __name__ == "__main__":
     d = '/scratch/r/rhlozek/rylan/aro_rfi/000010'
