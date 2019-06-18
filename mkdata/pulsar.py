@@ -102,6 +102,7 @@ class Pulsar(FRB):
         super()._set_scintillate(scintillate)
         self.t_ref = 0
         self.window = False
+        # multiple max dm by 10 to ensure the burst will fit across bandwidth
         self.pulse_duration = super()._disp_delay(max(self.freq)) * 10
         self.NTIME = int(self.pulse_duration / self.delta_t) + 1
         self.background = np.zeros((self.NFREQ, self.NTIME))
@@ -115,7 +116,15 @@ class Pulsar(FRB):
         # Crop burst so that it runs from edge to edge
         self.frb = self.frb[:, np.argmax(self.frb[0]):np.argmax(self.frb[-1])]
 
+        # update pulse duration to match truth
+        self.pulse_duration = self.frb.shape[1] * self.delta_t
         self.duration = self.NTIME * self.delta_t
+        try:
+            assert self.duration / 2 >= self.pulse_duration
+        except AssertionError as E:
+            m = "DM is too high for duration, only 1 period can fit in sample"
+            raise ValueError(m) from E
+
         self._set_period(period)
 
         # pad frb so that it has the width of exactly one period
@@ -173,10 +182,6 @@ class Pulsar(FRB):
             self.period = random.uniform(*period).to(u.ms)
         except TypeError as E:
             self.period = period.to(u.ms)
-        try:
-            assert self.duration / 2 >= self.pulse_duration
-        except AssertionError:
-            raise AssertionError("DM is too high for the given period")
         # minimum possible period is self.frb.shape[1]
         # maximum possible period is self.duration / 2
         self.period = min(self.duration/2, max(self.pulse_duration, self.period))
