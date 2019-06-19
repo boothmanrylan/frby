@@ -1,78 +1,170 @@
 import os
-import h5py
 import glob
 import numpy as np
-from mpi4py import MPI
+# from mpi4py import MPI
 import astropy.units as u
 from frb import FRB
 from pulsar import Pulsar
 from rfi import NormalRFI, UniformRFI, PoissonRFI, SolidRFI, TelescopeRFI
 from baseband.helpers import sequentialfile as sf
 from modifications import modifications
+import tensorflow as tf
+from skimage.measure import block_reduce
 
-frb_args = {'t_ref': 0 * u.ms,
-            'f_ref': 600 * u.MHz,
-            'dm': (100, 1000) * (u.pc / u.cm**3),
-            'fluence': (0.01, 150) * (u.Jy * u.ms),
-            'freq': (800, 400) * u.MHz,
-            'rate': (400 / 1024) * u.MHz,
-            'scat_factor': (-5, -4),
-            'width': (0.025, 30) * u.ms,
-            'scintillate': True,
-            'spec_ind': (-10, 15),
-            'max_size': 2**15}
+modifications = modifications[:2]
 
-psr_args = {'t_ref': 0 * u.ms,
-            'f_ref': 600 * u.MHz,
-            'dm': (2, 25) * (u.pc / u.cm**3),
-            'fluence': (0.01, 5) * (u.Jy * u.ms),
-            'freq': (800, 400) * u.MHz,
-            'rate': (400 / 1024) * u.MHz,
-            'scat_factor': (-5, -4),
-            'width': (0.025, 5) * u.ms,
-            'scintillate': True,
-            'spec_ind': (-1, 1),
-            'max_size': 2**15,
-            'period': (2, 5e2) * u.ms}
+frbArgs = {'t_ref': None,
+           'f_ref': None,
+           'dm': (50, 2500) * (u.pc / u.cm**3),
+           'fluence': (0.01, 150) * (u.Jy * u.ms),
+           'freq': (800, 400) * u.MHz,
+           'rate': (400 / 1024) * u.MHz,
+           'scat_factor': (-5, -3),
+           'width': (0.025, 40) * u.ms,
+           'scintillate': None,
+           'spec_ind': (-10, 15),
+           'window': True,
+           'normalize': True,
+           'max_size': 2**15}
 
-def save_to_hdf5(event, attributes, hdf5_file, path):
-    # Save the event unless the path already exists at which point return
-    # without saving or overwritten the old data.
+psrArgs = {'dm': (2, 25) * (u.pc / u.cm**3),
+           'fluence': (0.01, 5) * (u.Jy * u.ms),
+           'freq': (800, 400) * u.MHz,
+           'rate': (400 / 1024) * u.MHz,
+           'scat_factor': (-5, -4),
+           'width': (0.025, 5) * u.ms,
+           'scintillate': True,
+           'spec_ind': (-1, 1),
+           'max_size': 2**15,
+           'period': (2, 5e2) * u.ms}
+
+def _int64_feature(value):
+    """Wrapper for inserting int64 featues into Example proto."""
+    if not isinstance(value, list):
+        value = [value]
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
+
+def _float_feature(value):
+    """Wrapper for inserting float feature into Example proto."""
+    if not isinstance(value, list):
+        value = [value]
+    return tf.train.Feature(float_list=tf.train.FloatList(value=value))
+
+def _ndarray_feature(value):
+    """Wrapper for inserting ndarray feature into Example proto."""
+    # save the array dimensions
+    for idx, x in enumerate(value.shape):
+        f[idx] = _int64_feature(x)
+    # flatten array before saving
+    value = value.reshape(-1)
+    f['array'] = tf.train.Feature(float_list=tf.train.FloatList(value=value))
+    return f
+
+def _bytes_feature(value):
+    """Wrapper for inserting bytes features into Example proto."""
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
+def convert_labels(label):
+    if label == "frb":
+        return 0
+    elif label == "pulsar":
+        return 1
+    elif label == "rfi":
+        return 2
+    else:
+        raise ValueError("Mislabelled data passed to convert_to_example")
+
+def max_reduce(array, dim):
+    """
+    0 pads array so that 0th and 1st dimension are divisble by dim. Then
+    applies max block reduction to reshape array to (dim, dim).
+    """
+    while array.shape[0] % dim != 0:
+        array = np.vstack([np.zeros((1, array.shape[1])), array])
+    while signal.shape[1] % dim != 0:
+        array = np.hstack([np.zeros((array.shape[0], 1)), array])
+    x = array.shape[0] // dim
+    y = array.shape[1] // dim
+    return block_reduce(array, (x, y), np.max)
+
+def convert_to_example(event, id):
     try:
-        dset = hdf5_file.create_dataset(path, data=event)
-    except RuntimeError:
-        return
-    for key, value in attributes.items():
-        try:
-            dset.attrs[key] = value
-        except TypeError as E:
-            dset.attrs[key] = np.string_(value)
+        data1 = _ndarray_feature(event.sample)
+        data2 = _ndarray_feature(max_reduce(event.signal, 32))
+        example = tf.train.Example(features=tf.train.Features(feature={
+            'data/0th_dim': data[0],
+            'data/1st_dim': data[1], # TODO: arrays with more than 2 dims?
+            'data/data':    data['array'],
 
-def inject_and_save(rfi_event, hdf5_file, sim_number, path):
-    rfi_path = '/rfi/{}/{}'.format(path, sim_number)
-    save_to_hdf5(rfi_event.rfi, rfi_event.attributes, file, rfi_path)
+            'signal/0th_dim': data2[0],
+            'signal/1st_dim': data2[1],
+            'signal/data':    data2['array'],
 
-    psr_path = '/psr/{}/{}'.format(path, sim_number)
-    psr_args['background'] = rfi_event.rfi
-    psr_args['rate'] = rfi_event.rfi.shape[1]/rfi_event.attributes['duration']
-    psr = Pulsar(**psr_args)
-    save_to_hdf5(psr.pulsar, psr.attributes, file, psr_path)
+            'text_label': _bytes_feature(tf.compat.as_bytes(event.label)),
+            'rfi_type':   _bytes_feature(tf.compat.as_bytes(event.rfi_type)),
 
-    frb_path = '/frb/{}/{}'.format(path, sim_number)
-    frb_args['background'] = rfi_event.rfi
-    frb_args['rate'] = rfi_event.rfi.shape[1]/rfi_event.attributes['duration']
-    frb = FRB(**frb_args)
-    save_to_hdf5(frb.frb, frb.attributes, file, frb_path)
+            'snr':         _float_feature(event.snr),
+            'dm':          _float_feature(event.dm.value),
+            'scat_factor': _float_feature(event.scat_factor),
+            'width':       _float_feature(event.width),
+            'spec_ind':    _float_feature(event.spec_ind),
+            'period':      _float_feature(event.period.value),
+            'fluence':     _float_feature(event.fluence.value),
+            't_ref':       _float_feature(event.t_ref.value),
+            'f_ref':       _float_feature(event.f_ref.value),
+            'rate':        _float_feature(event.rate.value),
+            'delta_t':     _float_feature(event.delta_t.value),
+            'max_freq':    _float_feature(max(event.freq).value),
+            'min_freq':    _float_feature(min(event.freq).value),
 
-def make_data(rfi_class, files, kwargs, key, rank, hdf5_file):
+            'label':       _int64_feature(convert_labels(event.label)),
+            'n_periods':   _int64_feature(event.n_periods),
+            'scintillate': _int64_feature(int(event.scintillate)),
+            'window':      _int64_feature(int(event.window)),
+            'id':          _int64_feature(id)
+        }))
+        return example
+    except AttributeError as E:
+        m = "Event passed to convert_to_example must be FRB, Pulsar, or RFI"
+        raise ValueError(m) from E
+
+def inject_and_save(rfi, tfrecordwriter, sim_number, descriptor):
+    """
+    inject pulsars/frbs into rfi then save all into tfrecrod
+    """
+    rfi_type = rfi.rfi_type if descriptor is None else rfi.rfi_type + descriptor
+
+    example = convert_to_example(rfi, sim_number)
+    tfrecordwriter.write(example.SerializeToString())
+    sim_number += 1
+
+    psrArgs['background'] = rfi.sample
+    psrArgs['rate'] = rfi.rate
+    psrArgs['rfi_type'] = rfi_type
+    try: # ensure DM and duration are compatabile
+        psr = Pulsar(**psrArgs)
+        if psr.snr > 0:
+            example = convert_to_example(psr, sim_number)
+            tfrecordwriter.write(example.SerializeToString())
+            sim_number += 1
+    except ValueError:
+        pass
+
+    frbArgs['background'] = rfi.sample
+    frbArgs['rate'] = rfi.rate
+    frbArgs['rfi_type'] = rfi_type
+    frb = FRB(**frbArgs)
+    if frb.snr > 0:
+        example = convert_to_example(frb, sim_number)
+        tfrecordwriter.write(example.SerializeToString())
+        sim_number += 1
+
+    return sim_number
+
+def make_data(rfi, rank, writer):
     n_mods = len(modifications)
 
-    if key == 'telescope':
-        rfi = rfi_class(files, **kwargs)
-    else:
-        rfi = rfi_class(**kwargs)
-    path = '{}/unmodified'.format(key)
-    inject_and_save(rfi, hdf5_file, rank * n_mods, path)
+    sim_num = inject_and_save(rfi, writer, rank * (1 + n_mods), None)
 
     for idx, mods in enumerate(modifications):
         # Allow multiple modifications to be applied before saving
@@ -80,80 +172,44 @@ def make_data(rfi_class, files, kwargs, key, rank, hdf5_file):
             rfi.apply_function(m['func'], name=m['name'], input=m['input'],
                                freq_range=m['freq_range'],
                                time_range=m['time_range'], **m['params'])
-        path = '{}/modified'.format(key)
-        inject_and_save(rfi, hdf5_file, (rank * n_mods) + idx, path)
-        print('Done {}/{} of {}'.format(idx + 1, n_mods, key))
+        sim_num = inject_and_save(rfi, writer, sim_num, 'modded')
+        print('Done {}/{}'.format(idx + 1, n_mods))
 
-        # Unapply the modification to be able to apply another to the same base
+        # Unapply the modifications to apply more to the same base
         rfi.reset()
-    shape = rfi.rfi.shape
+
+    shape = rfi.sample.shape
     duration = rfi.attributes['duration']
     return shape, duration
 
-comm = MPI.COMM_WORLD
-rank = comm.Get_rank()
-size = comm.Get_size()
+if __name__ == "__main__":
+    # comm = MPI.COMM_WORLD
+    # rank = comm.Get_rank()
+    # size = comm.Get_size()
+    rank = 0
+    size = 1
 
-file_name = '/home/rylan/dunlap/data/training_data.hdf5'
-file = h5py.File(file_name, 'r+')
+    tfrecord = '/home/rylan/dunlap-2.0/data/data_{}.tfrecord'.format(rank)
+    writer = tf.python_io.TFRecordWriter(tfrecord)
 
-# Create the HDF5 groups if they do not already exist
-try:
-    rfi_grp = file.create_group('/rfi')
-except ValueError:
-    rfi_grp = file['/rfi']
-try:
-    psr_grp = file.create_group('/psr')
-except ValueError:
-    psr_grp = file['/psr']
-try:
-    frb_grp = file.create_group('/frb')
-except:
-    frb_grp = file['/frb']
-for grp in [rfi_grp, psr_grp, frb_grp]:
-    for sub_grp in ['telescope', 'solid', 'poisson', 'uniform', 'normal']:
-        try:
-            sub_grp = grp.create_group(sub_grp)
-        except ValueError:
-            sub_grp = grp[sub_grp]
-        try:
-            sub_grp.create_group('unmodified')
-            sub_grp.create_group('modified')
-        except ValueError:
-            pass
+    aro_files = np.sort(glob.glob('/home/rylan/dunlap-2.0/data/vdif/*.vdif'))
+    aro_files = aro_files[:1]
+    group = 20
 
-aro_files = np.sort(glob.glob('/home/rylan/dunlap/data/vdif/*.vdif'))
-group = 20
+    # while aro_files.shape[0] - group <= size:
+    #    aro_files = np.hstack([aro_files] * 2)
 
-while aro_files.shape[0] - group <= size:
-    aro_files = np.hstack([aro_files] * 2)
+    rank_files = sf.open(aro_files)
+    # rank_files = sf.open(aro_files[rank: rank + group])
 
-rank_files = sf.open(aro_files[rank: rank + group])
+    # Make the data with rfi from ARO as the background, use the shape and
+    # duration of data made through this method as the shape and duration
+    # of data made in the other methods
+    rfi = TelescopeRFI(rank_files, rate_out=1*u.kHz)
+    shape, duration = make_data(rfi, rank, writer)
 
-# Make the data with rfi from ARO as the background, use the shape and duration
-# of data made through this method as the shape and duration of data made in
-# the other methods
-shape, duration = make_data(TelescopeRFI, rank_files, {'rate_out': 1e-3*u.MHz},
-                           'telescope', rank, file)
+    for rfiClass in [NormalRFI, UniformRFI, PoissonRFI, SolidRFI]:
+        rfi = rfiClass(shape=shape, duration=duration)
+        make_data(rfi, rank, writer)
 
-normal_rfi = {'class': NormalRFI,
-              'key': 'normal',
-              'kwargs': {'shape': shape,
-                         'duration': duration}}
-uniform_rfi = {'class': UniformRFI,
-               'key': 'uniform',
-               'kwargs': {'shape': shape,
-                         'duration': duration}}
-poisson_rfi = {'class': PoissonRFI,
-               'key': 'poisson',
-               'kwargs': {'shape': shape,
-                         'duration': duration}}
-solid_rfi = {'class': SolidRFI,
-             'key': 'solid',
-             'kwargs': {'shape': shape,
-                         'duration': duration}}
-
-# Make the data with the random and solid backgrounds
-rfi_types = [normal_rfi, uniform_rfi, poisson_rfi, solid_rfi]
-for RFI in rfi_types:
-    make_data(RFI['class'], rank_files, RFI['kwargs'], RFI['key'], rank, file)
+    writer.close()
