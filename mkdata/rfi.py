@@ -37,12 +37,13 @@ class RFI(object):
         except AttributeError:
             max_freq = max_freq * u.MHz
 
-        frequency = np.linspace(max_freq.value, min_freq.value, nfreq)
+        self.freq = np.linspace(max_freq, min_freq, nfreq)
         time = np.linspace(0, duration.value, ntime)
 
-        self.frequency_array = np.vstack([frequency] * ntime).T
+        self.frequency_array = np.vstack([self.freq] * ntime).T
         self.time_array = np.vstack([time] * nfreq)
-        self.rfi = background
+        self.sample = background
+        self.signal = self.sample
         self.base_rfi = np.copy(background)
         attributes = {'min_freq': min_freq, 'max_freq': max_freq,
                       'frequency_units': str(min_freq.unit), 'class': 'rfi',
@@ -50,6 +51,26 @@ class RFI(object):
                       'duration': duration}
         self.attributes = attributes
         self.base_attributes = dict(attributes)
+
+        self.delta_t = (duration / ntime).to(u.ms)
+        self.rate = (1 / self.delta_t).to(u.MHz)
+        self.max_freq = max_freq
+        self.min_freq = min_freq
+        self.label = 'rfi'
+
+        # add all FRB/pulsar attributes to facilitate saving later
+        self.snr = 0
+        self.dm = 0 * u.pc * u.cm ** -3
+        self.scat_factor = 0
+        self.width = 0
+        self.spec_ind = 0
+        self.period = 0 * u.ms
+        self.n_periods = 0
+        self.fluence = 0 * u.ms * u.Jy
+        self.scintillate = 0
+        self.window = 0
+        self.t_ref = 0 * u.ms
+        self.f_ref = 0 * u.MHz
 
     def apply_function(self, func, name=None, input='value', freq_range=None,
                        time_range=None, **params):
@@ -70,7 +91,7 @@ class RFI(object):
                          will be an array containing the time values of each
                          index regardless of frequency. If 'freq' than x will be
                          an array containing the frequency values of each index
-                         regardless of time. Otherwise x will be self.rfi.
+                         regardless of time. Otherwise x will be self.sample.
             freq_range (list or None): Determines the range(s) of frequencies
                                        that are affected by the function. If
                                        None the entire bandwidth is affected.
@@ -92,21 +113,21 @@ class RFI(object):
         elif input == 'time':
             x = self.time_array
         else:
-            x = self.rfi
+            x = self.sample
         if freq_range is None:
-            freq_coefs = np.ones_like(self.rfi)
+            freq_coefs = np.ones_like(self.sample)
         else:
-            freq_coefs = np.zeros_like(self.rfi)
+            freq_coefs = np.zeros_like(self.sample)
             for start, stop in freq_range:
                 freq_coefs[int(start):int(stop), :] = 1
         if time_range is None:
-            time_coefs = np.ones_like(self.rfi)
+            time_coefs = np.ones_like(self.sample)
         else:
-            time_coefs = np.zeros_like(self.rfi)
+            time_coefs = np.zeros_like(self.sample)
             for start, stop in time_range:
                 time_coefs[:, int(start):int(stop)] = 1
         coefs = (time_coefs * freq_coefs).astype(bool)
-        self.rfi = func(x, self.rfi, coefs, **params)
+        self.sample = func(x, self.sample, coefs, **params)
         self.attributes['functions'] = self.attributes['functions'][:] + [name]
         params_list = ['{}-{}'.format(name, p) for p in params.keys()]
         self.attributes[name] = params_list
@@ -116,17 +137,17 @@ class RFI(object):
     def reset(self):
         """
         Removes the effects of any functions applied to the base rfi. Reverts
-        self.attributes and self.rfi to how the were immediately after
+        self.attributes and self.sample to how the were immediately after
         initialization.
         """
-        self.rfi = np.copy(self.base_rfi)
+        self.sample = np.copy(self.base_rfi)
         self.attributes = dict(self.base_attributes)
 
     def plot(self):
         """
-        Plots self.rfi with a colorbar
+        Plots self.sample with a colorbar
         """
-        plt.imshow(self.rfi, interpolation='nearest', aspect='auto')
+        plt.imshow(self.sample, interpolation='nearest', aspect='auto')
         plt.colorbar()
         plt.show()
 
@@ -139,9 +160,10 @@ class NormalRFI(RFI):
                  max_freq=800*u.MHz, duration=100*u.ms, sigma=0, mu=1):
         bg = np.random.normal(loc=sigma, scale=mu, size=shape)
         super(NormalRFI, self).__init__(bg, min_freq, max_freq, duration)
-        self.attributes['type'] = 'normal'
+        self.attributes['rfi_type'] = 'normal'
         self.attributes['normal_loc'] = sigma
         self.attributes['normal_scale'] = mu
+        self.rfi_type = 'gaussian'
 
 
 class UniformRFI(RFI):
@@ -152,9 +174,10 @@ class UniformRFI(RFI):
                  max_freq=800*u.MHz, duration=1000*u.ms, low=-3, high=3):
         bg = np.random.uniform(low=low, high=high, size=shape)
         super(UniformRFI, self).__init__(bg, min_freq, max_freq, duration)
-        self.attributes['type'] = 'uniform'
+        self.attributes['rfi_type'] = 'uniform'
         self.attributes['uniform_low'] = low
         self.attributes['uniform_high'] = high
+        self.rfi_type = 'uniform'
 
 
 class PoissonRFI(RFI):
@@ -166,8 +189,9 @@ class PoissonRFI(RFI):
         bg = np.random.poisson(lam=lam, size=shape)
         bg = bg.astype(float)
         super(PoissonRFI, self).__init__(bg, min_freq, max_freq, duration)
-        self.attributes['type'] = 'poisson'
+        self.attributes['rfi_type'] = 'poisson'
         self.attributes['poisson_lam'] = lam
+        self.rfi_type = 'poisson'
 
 
 class SolidRFI(RFI):
@@ -178,8 +202,9 @@ class SolidRFI(RFI):
                  max_freq=800*u.MHz, duration=1000*u.ms, val=0):
         bg = np.full(shape, fill_value=val, dtype='float64')
         super(SolidRFI, self).__init__(bg, min_freq, max_freq, duration)
-        self.attributes['type'] = 'solid'
+        self.attributes['rfi_type'] = 'solid'
         self.attributes['solid_fill_value'] = val
+        self.rfi_type = 'solid'
 
 
 class TelescopeRFI(RFI):
@@ -191,10 +216,11 @@ class TelescopeRFI(RFI):
         data, file_names, rate_out = read_vdif(files, rate_in, rate_out)
         duration = (data.shape[1] / rate_out).to(u.ms)
         super(TelescopeRFI, self).__init__(data, min_freq, max_freq, duration)
-        self.attributes['type'] = 'telescope'
+        self.attributes['rfi_type'] = 'telescope'
         self.attributes['telescope_files'] = file_names
         self.attributes['telescope_rate_in'] = rate_in
         self.attributes['telescope_rate_out'] = rate_out
+        self.rfi_type = 'telescope'
 
 
 def fourier_lowpass_filter(x, rfi, boolean, cutoff=None):
