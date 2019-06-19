@@ -16,6 +16,9 @@ from tools import read_vdif
 
 k_dm = 4.148808e6 * (u.MHz**2 * u.cm**3 * u.ms / u.pc)
 
+# TODO: check the mean and std of real background data
+# TODO: save directly to TFRecords
+
 class FRB(object):
     """
     Generate a simulated fast radio burst.
@@ -68,6 +71,8 @@ class FRB(object):
         the spectral index of the burst.
     background : vdif file, list of vdif files, numpy ndarray
         See _see_background
+    rfi_type: string
+        Description of the background if given as an ndarray.
     max_size : int
         The size to reduce/bin the data to in time.
     bg_mean : float
@@ -81,7 +86,7 @@ class FRB(object):
 
     Attributes
     ----------
-    frb : ndarray
+    sample : ndarray
         The simulated frb in the background noise.
     background : ndarray
         The background noise.
@@ -91,8 +96,6 @@ class FRB(object):
         The frequency range of the samples.
     snr : float
         The approximate signal-to-noise ratio of the burst.
-    attributes : dict
-        Key parameters used to make the simulation.
     """
 
     def __init__(self, t_ref=None, f_ref=None, NFREQ=1024, NTIME=8192,
@@ -101,13 +104,15 @@ class FRB(object):
                 rate=1000*u.Hz, scat_factor=(-5, -3),
                 #rate=(0.4/1024)*u.GHz, scat_factor=(-5, -4),
                 width=(0.05, 40)*u.ms, scintillate=None, spec_ind=(-10, 10),
-                background=None, max_size=2**15, bg_mean=1, bg_std=1,
-                window=True, normalize=True):
+                background=None, rfi_type=None, max_size=2**15,
+                bg_mean=1, bg_std=1, window=True, normalize=True):
+
+        self.label = 'frb'
 
         self.max_size = max_size
 
         self._set_rate_and_delta_t(rate, delta_t)
-        self._set_background(background, NFREQ, NTIME, bg_mean, bg_std)
+        self._set_background(background, NFREQ, NTIME, bg_mean, bg_std, rfi_type)
         self._set_freq(freq)
         self._set_f_ref(f_ref)
         self._set_t_ref(t_ref)
@@ -122,15 +127,17 @@ class FRB(object):
         self.signal = self._simulate_frb()
 
         if self.window:
-            self.signal = self._apply_window(self.signal)
+            self.signal = apply_window(self.signal)
 
-        self.frb = self.signal + self.background
+        self.sample = self.signal + self.background
         self.snr = self._get_snr()
 
         if normalize:
-            self.frb = self._normalize()
+            self.sample = self._normalize()
 
-        self.attributes = self._get_parameters()
+        # add pulsar period attributes for consistency between classes
+        self.period = 0 * u.ms
+        self.n_periods = 0
 
     def __repr__(self):
         return '\n'.join(str(self._get_parameters())[1:-1].split(', '))
@@ -300,7 +307,7 @@ class FRB(object):
             self.scat_factor = np.exp(scat_factor)
         self.scat_factor = min(1, self.scat_factor + 1e-18) # quick bug fix hack
 
-    def _set_background(self, noise, NFREQ, NTIME, mean, std):
+    def _set_background(self, noise, NFREQ, NTIME, mean, std, bg_description):
         """
         Generates the background noise the simulated FRB will be injected into.
 
@@ -337,16 +344,19 @@ class FRB(object):
             self.files = files
             self.rate = rate
             self.delta_t = (1/rate).to(u.ms)
+            self.rfi_type = "from_vdif_files"
         except TypeError: # noise isn't a file or the file doesn't exist
             try: # noise is a numpy array 
                 self.NFREQ = noise.shape[0]
                 self.NTIME = noise.shape[1]
                 self.files = ''
+                self.rfi_type = bg_description
             except AttributeError: # noise isn't an array
                 noise = np.random.normal(mean, std, size=(NFREQ, NTIME))
                 self.NFREQ = noise.shape[0]
                 self.NTIME = noise.shape[1]
                 self.files = ''
+                self.rfi_type = "gaussian_noise"
 
             if self.NTIME > self.max_size: # Reduce detail in time
                 width = int(self.max_size)
@@ -491,7 +501,7 @@ class FRB(object):
         axis[0].set_yticklabels(ylabels)
         axis[0].set_xticks(xticks)
         axis[0].set_xticklabels(xlabels)
-        axis[1].imshow(self.frb, interpolation='nearest', aspect='auto')
+        axis[1].imshow(self.sample, interpolation='nearest', aspect='auto')
         axis[1].set_title("FRB S/N: {:.2f}".format(self.snr))
         axis[1].set_xlabel("Time ({})".format(self.delta_t.unit))
         axis[1].set_xticks(xticks)
@@ -504,7 +514,7 @@ class FRB(object):
 
 
     def _dedisperse(self):
-        output = np.copy(self.frb)
+        output = np.copy(self.sample)
         for i in range(output.shape[0]):
             output[i, :] = np.roll(output[i, :], int(self.arrival_indices[i]*-1))
         return output
@@ -521,12 +531,12 @@ class FRB(object):
 
         Returns: None
         """
-        # TODO: update to save to hdf5
+        # TODO: update to save to TFRecord
         output_dir = '/'.join(output.split('/')[:-1])
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        np.save(output, self.frb)
+        np.save(output, self.sample)
 
     def _get_parameters(self):
         """
@@ -539,15 +549,16 @@ class FRB(object):
                   'fluence': self.fluence, 'width': self.width,
                   'spec_ind': self.spec_ind, 'scat_factor': self.scat_factor,
                   'max_freq': max(self.freq), 'min_freq': min(self.freq),
-                  'files': self.files, 'class': 'frb', 'snr': self.snr,
-                  'window': self.window}
+                  'files': self.files, 'label': self.label, 'snr': self.snr,
+                  'window': self.window, 'period': self.period,
+                  'n_periods': self.n_periods}
         return params
 
 
     def _normalize(self):
-        std = np.std(self.frb, axis=1, keepdims=True)
+        std = np.std(self.sample, axis=1, keepdims=True)
         std = np.where(std != 0, std, 1)
-        return ((self.frb - np.mean(self.frb, axis=1, keepdims=True)) / std)
+        return ((self.sample - np.mean(self.sample, axis=1, keepdims=True)) / std)
 
     def _get_snr(self):
         if np.sum(self.background) == 0:
@@ -593,7 +604,7 @@ def apply_window(A):
         x = np.arange(width) + 1
         x = 1 / (x**2)
         if reverse:
-            x = np.flip(x)
+            x = np.flip(x, axis=0)
         return x
 
     window = np.ones_like(A)
