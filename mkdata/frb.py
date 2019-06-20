@@ -569,7 +569,7 @@ class FRB(object):
         if np.sum(self.background) == 0:
             return np.inf
         else:
-            return np.sqrt(np.sum(self.signal**2))/np.median(self.background)
+            return np.sqrt(np.sum(self.signal**2))/np.abs(np.median(self.background))
 
 
 def apply_window(A):
