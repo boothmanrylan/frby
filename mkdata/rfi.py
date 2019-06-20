@@ -167,7 +167,7 @@ class NormalRFI(RFI):
     Creates an RFI object with a gaussian/normally distributed background.
     """
     def __init__(self, shape=(1024, 2**15), min_freq=400*u.MHz,
-                 max_freq=800*u.MHz, duration=100*u.ms, sigma=0, mu=1):
+                 max_freq=800*u.MHz, duration=100*u.ms, sigma=1, mu=1):
         bg = np.random.normal(loc=sigma, scale=mu, size=shape)
         super(NormalRFI, self).__init__(bg, min_freq, max_freq, duration)
         self.attributes['rfi_type'] = 'normal'
@@ -181,7 +181,7 @@ class UniformRFI(RFI):
     Creates an RFI object with a uniformly distributed background.
     """
     def __init__(self, shape=(1024, 2**15), min_freq=400*u.MHz,
-                 max_freq=800*u.MHz, duration=1000*u.ms, low=-3, high=3):
+                 max_freq=800*u.MHz, duration=1000*u.ms, low=0, high=3):
         bg = np.random.uniform(low=low, high=high, size=shape)
         super(UniformRFI, self).__init__(bg, min_freq, max_freq, duration)
         self.attributes['rfi_type'] = 'uniform'
