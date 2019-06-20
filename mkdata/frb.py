@@ -98,7 +98,7 @@ class FRB(object):
         The approximate signal-to-noise ratio of the burst.
     """
 
-    def __init__(self, t_ref=None, f_ref=None, NFREQ=1024, NTIME=8192,
+    def __init__(self, t_ref=0*u.ms, f_ref=None, NFREQ=1024, NTIME=8192,
                 delta_t=0.16*u.ms, dm=(50, 2500)*(u.pc/u.cm**3),
                 fluence=(0.02, 200)*(u.Jy*u.ms), freq=(0.8, 0.4)*u.GHz,
                 rate=1000*u.Hz, scat_factor=(-5, -3),
@@ -106,6 +106,11 @@ class FRB(object):
                 width=(0.05, 40)*u.ms, scintillate=None, spec_ind=(-10, 10),
                 background=None, rfi_type=None, max_size=2**15,
                 bg_mean=1, bg_std=1, window=True, normalize=True):
+
+        if t_ref is None and f_ref is None:
+            print("Warning selecting both the reference time and the reference" \
+                  " frequency randomly can create samples that do not exist in" \
+                  " the window and have a signal-to-noise ratio of 0.")
 
         self.label = 'frb'
 
@@ -221,7 +226,6 @@ class FRB(object):
         if not isinstance(t_ref, u.Quantity):
             t_ref *= u.ms
         self.t_ref = t_ref.to(u.ms)
-
 
     def _set_dm(self, dm):
         """
@@ -512,7 +516,6 @@ class FRB(object):
         else:
             plt.savefig(save)
 
-
     def _dedisperse(self):
         output = np.copy(self.sample)
         for i in range(output.shape[0]):
@@ -553,7 +556,6 @@ class FRB(object):
                   'window': self.window, 'period': self.period,
                   'n_periods': self.n_periods}
         return params
-
 
     def _normalize(self):
         std = np.std(self.sample, axis=1, keepdims=True)

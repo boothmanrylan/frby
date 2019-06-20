@@ -103,7 +103,7 @@ class Pulsar(FRB):
         super()._set_spec_ind(spec_ind)
         super()._set_scat_factor(scat_factor)
         super()._set_scintillate(scintillate)
-        self.t_ref = 0
+        self.t_ref = 0 * u.ms
         self.window = False
         # multiple max dm by 10 to ensure the burst will fit across bandwidth
         self.pulse_duration = super()._disp_delay(max(self.freq)) * 10
@@ -124,10 +124,13 @@ class Pulsar(FRB):
         # update pulse duration to match truth
         self.pulse_duration = self.single_pulse.shape[1] * self.delta_t
         self.duration = self.NTIME * self.delta_t
+
         try:
             assert self.duration / 2 >= self.pulse_duration
         except AssertionError as E:
-            m = "DM is too high for duration, only 1 period can fit in sample"
+            m = f"Dispersion measure of {self.dm} too high for duration of " \
+                f"{self.NTIME * self.delta_t}. At least two pulsar periods" \
+                "must be able to fit in the sample without overlapping."
             raise ValueError(m) from E
 
         self._set_period(period)
