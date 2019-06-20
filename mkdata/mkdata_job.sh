@@ -4,8 +4,6 @@
 #SBATCH --time=6:00:00
 #SBATCH --job-name mkdata
 #SBATCH --output=/scratch/r/rhlozek/rylan/sbatch/sbatch_output_%j.txt
-#SBATCH --signal=SIGINT 600
-
 
 # designed to run on niagara not SOSCIP GPU
 
