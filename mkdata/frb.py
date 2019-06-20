@@ -453,9 +453,12 @@ class FRB(object):
         gaus_prof = self._gaussian_profile(t)
         scat_prof = self._scat_profile(f)
         pulse_prof = signal.fftconvolve(gaus_prof, scat_prof)[:self.NTIME]
+
         pulse_prof *= self.fluence.value
         pulse_prof *= (f / self.f_ref).value ** self.spec_ind
-        pulse_prof /= (pulse_prof.max())
+
+        pulse_prof /= (pulse_prof.max() * self.width)
+
         return pulse_prof
 
     def _simulate_frb(self):
