@@ -1,42 +1,15 @@
-import os
+import sys
 import glob
 import numpy as np
-# from mpi4py import MPI
 import astropy.units as u
+import tensorflow as tf
+from mpi4py import MPI
+from skimage.measure import block_reduce
+from baseband.helpers import sequentialfile as sf
 from frb import FRB
 from pulsar import Pulsar
 from rfi import NormalRFI, UniformRFI, PoissonRFI, SolidRFI, TelescopeRFI
-from baseband.helpers import sequentialfile as sf
 from modifications import modifications
-import tensorflow as tf
-from skimage.measure import block_reduce
-
-modifications = modifications[:2]
-
-frbArgs = {'t_ref': None,
-           'f_ref': None,
-           'dm': (50, 2500) * (u.pc / u.cm**3),
-           'fluence': (0.01, 150) * (u.Jy * u.ms),
-           'freq': (800, 400) * u.MHz,
-           'rate': (400 / 1024) * u.MHz,
-           'scat_factor': (-5, -3),
-           'width': (0.025, 40) * u.ms,
-           'scintillate': None,
-           'spec_ind': (-10, 15),
-           'window': True,
-           'normalize': True,
-           'max_size': 2**15}
-
-psrArgs = {'dm': (2, 25) * (u.pc / u.cm**3),
-           'fluence': (0.01, 5) * (u.Jy * u.ms),
-           'freq': (800, 400) * u.MHz,
-           'rate': (400 / 1024) * u.MHz,
-           'scat_factor': (-5, -4),
-           'width': (0.025, 5) * u.ms,
-           'scintillate': True,
-           'spec_ind': (-1, 1),
-           'max_size': 2**15,
-           'period': (2, 5e2) * u.ms}
 
 def _int64_feature(value):
     """Wrapper for inserting int64 featues into Example proto."""
@@ -52,6 +25,7 @@ def _float_feature(value):
 
 def _ndarray_feature(value):
     """Wrapper for inserting ndarray feature into Example proto."""
+    f = {}
     # save the array dimensions
     for idx, x in enumerate(value.shape):
         f[idx] = _int64_feature(x)
@@ -74,27 +48,25 @@ def convert_labels(label):
     else:
         raise ValueError("Mislabelled data passed to convert_to_example")
 
-def max_reduce(array, dim):
+def mean_reduce(signal, dim):
     """
     0 pads array so that 0th and 1st dimension are divisble by dim. Then
     applies max block reduction to reshape array to (dim, dim).
     """
-    while array.shape[0] % dim != 0:
-        array = np.vstack([np.zeros((1, array.shape[1])), array])
-    while signal.shape[1] % dim != 0:
-        array = np.hstack([np.zeros((array.shape[0], 1)), array])
-    x = array.shape[0] // dim
-    y = array.shape[1] // dim
-    return block_reduce(array, (x, y), np.max)
+    while signal.shape[0] % dim != 0:
+        signal = np.vstack([np.zeros((1, signal.shape[1])), signal])
+    x = signal.shape[0] // dim
+    y = signal.shape[1] // dim
+    return block_reduce(signal, (x, y), np.mean)
 
 def convert_to_example(event, id):
     try:
         data1 = _ndarray_feature(event.sample)
-        data2 = _ndarray_feature(max_reduce(event.signal, 32))
+        data2 = _ndarray_feature(mean_reduce(event.signal, 64))
         example = tf.train.Example(features=tf.train.Features(feature={
-            'data/0th_dim': data[0],
-            'data/1st_dim': data[1], # TODO: arrays with more than 2 dims?
-            'data/data':    data['array'],
+            'data/0th_dim': data1[0],
+            'data/1st_dim': data1[1], # TODO: arrays with more than 2 dims?
+            'data/data':    data1['array'],
 
             'signal/0th_dim': data2[0],
             'signal/1st_dim': data2[1],
@@ -130,7 +102,7 @@ def convert_to_example(event, id):
 
 def inject_and_save(rfi, tfrecordwriter, sim_number, descriptor):
     """
-    inject pulsars/frbs into rfi then save all into tfrecrod
+    inject pulsars/frbs into rfi event then save with tfrecordwriter
     """
     rfi_type = rfi.rfi_type if descriptor is None else rfi.rfi_type + descriptor
 
@@ -138,78 +110,85 @@ def inject_and_save(rfi, tfrecordwriter, sim_number, descriptor):
     tfrecordwriter.write(example.SerializeToString())
     sim_number += 1
 
-    psrArgs['background'] = rfi.sample
-    psrArgs['rate'] = rfi.rate
-    psrArgs['rfi_type'] = rfi_type
     try: # ensure DM and duration are compatabile
-        psr = Pulsar(**psrArgs)
-        if psr.snr > 0:
+        psr = Pulsar(background=rfi.sample, rate=rfi.rate, rfi_type=rfi_type)
+        if psr.snr > 0: # dont save sim with snr == 0
             example = convert_to_example(psr, sim_number)
             tfrecordwriter.write(example.SerializeToString())
             sim_number += 1
-    except ValueError:
-        pass
+        else:
+            print("Pulsar created with snr == 0")
+    except ValueError as E:
+        raise E
 
-    frbArgs['background'] = rfi.sample
-    frbArgs['rate'] = rfi.rate
-    frbArgs['rfi_type'] = rfi_type
-    frb = FRB(**frbArgs)
-    if frb.snr > 0:
+    frb = FRB(background=rfi.sample, rate=rfi.rate, rfi_type=rfi_type)
+    if frb.snr > 0: # dont save sim with snr == 0
         example = convert_to_example(frb, sim_number)
         tfrecordwriter.write(example.SerializeToString())
         sim_number += 1
+    else:
+        print("FRB created with snr == 0")
 
     return sim_number
 
-def make_data(rfi, rank, writer):
-    n_mods = len(modifications)
+def make_data(rfi, writer, rank, sim_num, sims_per_rank):
+    # make sims with unmodified background
+    sim_num = inject_and_save(rfi, writer, sim_num, None)
+    out = f"Done {sim_num - (rank * sims_per_rank)}/{sims_per_rank}    \r"
+    sys.stdout.write(out)
+    sys.stdout.flush()
 
-    sim_num = inject_and_save(rfi, writer, rank * (1 + n_mods), None)
-
+    # make sims with modified background
     for idx, mods in enumerate(modifications):
         # Allow multiple modifications to be applied before saving
         for m in mods:
             rfi.apply_function(m['func'], name=m['name'], input=m['input'],
                                freq_range=m['freq_range'],
                                time_range=m['time_range'], **m['params'])
+
         sim_num = inject_and_save(rfi, writer, sim_num, 'modded')
-        print('Done {}/{}'.format(idx + 1, n_mods))
+        out = f"Done {sim_num - (rank * sims_per_rank)}/{sims_per_rank}    \r"
+        sys.stdout.write(out)
+        sys.stdout.flush()
 
         # Unapply the modifications to apply more to the same base
         rfi.reset()
 
     shape = rfi.sample.shape
     duration = rfi.attributes['duration']
-    return shape, duration
+    return sim_num, shape, duration
 
 if __name__ == "__main__":
-    # comm = MPI.COMM_WORLD
-    # rank = comm.Get_rank()
-    # size = comm.Get_size()
-    rank = 0
-    size = 1
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    group = 30 # 30 vdif files is ~2.5s
+    aro_files = np.sort(glob.glob('/home/rylan/dunlap-2.0/data/vdif/*.vdif'))
+    while size * group >= aro_files.shape[0]:
+       aro_files = np.hstack([aro_files, aro_files])
+
+    rfi_types = [NormalRFI, UniformRFI, PoissonRFI]
+
+    # +1 for Telescope
+    n_rfi_types = len(rfi_types) + 1
+
+    # 3 because each sim creates an FRB, a Pulsar, and an RFI sample
+    sims_per_rank = 3 * n_rfi_types * (1 + len(modifications))
+
+    init_sim_num = rank * sims_per_rank
 
     tfrecord = '/home/rylan/dunlap-2.0/data/data_{}.tfrecord'.format(rank)
-    writer = tf.python_io.TFRecordWriter(tfrecord)
 
-    aro_files = np.sort(glob.glob('/home/rylan/dunlap-2.0/data/vdif/*.vdif'))
-    aro_files = aro_files[:1]
-    group = 20
+    with tf.python_io.TFRecordWriter(tfrecord) as writer:
+        rank_files = sf.open(aro_files[(rank * group):(rank + 1)  * group])
 
-    # while aro_files.shape[0] - group <= size:
-    #    aro_files = np.hstack([aro_files] * 2)
+        # Make the data with rfi from ARO as the background, use the shape and
+        # duration of data made through this method as the shape and duration
+        # of data made in the other methods
+        rfi = TelescopeRFI(rank_files, rate_out=1*u.kHz)
+        sim_num, shape, duration = make_data(rfi, writer, rank, init_sim_num, sims_per_rank)
 
-    rank_files = sf.open(aro_files)
-    # rank_files = sf.open(aro_files[rank: rank + group])
-
-    # Make the data with rfi from ARO as the background, use the shape and
-    # duration of data made through this method as the shape and duration
-    # of data made in the other methods
-    rfi = TelescopeRFI(rank_files, rate_out=1*u.kHz)
-    shape, duration = make_data(rfi, rank, writer)
-
-    for rfiClass in [NormalRFI, UniformRFI, PoissonRFI, SolidRFI]:
-        rfi = rfiClass(shape=shape, duration=duration)
-        make_data(rfi, rank, writer)
-
-    writer.close()
+        for rfiClass in rfi_types:
+            rfi = rfiClass(shape=shape, duration=duration)
+            sim_num, _, _ = make_data(rfi, writer, rank, sim_num, sims_per_rank)
