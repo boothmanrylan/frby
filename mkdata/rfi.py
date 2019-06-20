@@ -43,7 +43,6 @@ class RFI(object):
         self.frequency_array = np.vstack([self.freq] * ntime).T
         self.time_array = np.vstack([time] * nfreq)
         self.sample = background
-        self.signal = self.sample
         self.base_rfi = np.copy(background)
         attributes = {'min_freq': min_freq, 'max_freq': max_freq,
                       'frequency_units': str(min_freq.unit), 'class': 'rfi',
@@ -71,6 +70,17 @@ class RFI(object):
         self.window = 0
         self.t_ref = 0 * u.ms
         self.f_ref = 0 * u.MHz
+
+    # signal and background are properties so that they point to sample
+    # without storing sample multiple times or having to update three things
+    # every time the sample changes.
+    @property
+    def signal(self):
+        return np.zeros_like(self.sample)
+
+    @property
+    def background(self):
+        return self.sample
 
     def apply_function(self, func, name=None, input='value', freq_range=None,
                        time_range=None, **params):
