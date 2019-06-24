@@ -129,7 +129,7 @@ class Pulsar(FRB):
             assert self.duration / 2 >= self.pulse_duration
         except AssertionError as E:
             m = f"Dispersion measure of {self.dm} too high for duration of " \
-                f"{self.NTIME * self.delta_t}. At least two pulsar periods" \
+                f"{self.NTIME * self.delta_t}. At least two pulsar periods " \
                 "must be able to fit in the sample without overlapping."
             raise ValueError(m) from E
 

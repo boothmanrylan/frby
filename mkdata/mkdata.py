@@ -1,5 +1,6 @@
 import sys
 import glob
+import signal
 import numpy as np
 import astropy.units as u
 import tensorflow as tf
@@ -10,6 +11,37 @@ from frb import FRB
 from pulsar import Pulsar
 from rfi import NormalRFI, UniformRFI, PoissonRFI, SolidRFI, TelescopeRFI
 from modifications import modifications
+
+frb_sims = 0
+psr_sims = 0
+rfi_sims = 0
+
+interrupted = False
+def signal_handler(signum, frame):
+    global interrupted
+    interrupted = True
+
+summary_file = ""
+def close_gracefully():
+    comm = MPI.COMM_WORLD
+    rank = comm.get_rank()
+
+    sendbuf = np.array([frb_sims, psr_sims, rfi_sims], dtype=int)
+    recvbuf = None
+
+    if rank == 0:
+        recvbuf = np.empty([size, 3], dtype=int)
+
+    comm.Gather(sendbuf, recvbuf, root=0)
+
+    if rank == 0:
+        recvbuf = np.sum(recvbuf, axis=0)
+        m = f",FRBs,Pulsars,RFI\nNsims,{recvbuf[0]},{recvbuf[1]},{recvbuf[2]}"
+        if summary_file is "":
+            print(m)
+        else:
+            with open(summary_file, 'w') as f:
+            f.write(m))
 
 def _int64_feature(value):
     """Wrapper for inserting int64 featues into Example proto."""
@@ -109,6 +141,8 @@ def inject_and_save(rfi, tfrecordwriter, sim_number, descriptor):
     example = convert_to_example(rfi, sim_number)
     tfrecordwriter.write(example.SerializeToString())
     sim_number += 1
+    global rfi_sims
+    rfi_sims += 1
 
     try: # ensure DM and duration are compatabile
         psr = Pulsar(background=rfi.sample, rate=rfi.rate, rfi_type=rfi_type)
@@ -116,30 +150,34 @@ def inject_and_save(rfi, tfrecordwriter, sim_number, descriptor):
             example = convert_to_example(psr, sim_number)
             tfrecordwriter.write(example.SerializeToString())
             sim_number += 1
+            global psr_sims
+            psr_sims += 1
         else:
-            print("Pulsar created with snr == 0")
+            print("Pulsar creation failed due to signal-to-noise ratio")
     except ValueError as E:
-        raise E
+        print("Pulsar creation failed due to DM duration mismatch")
 
     frb = FRB(background=rfi.sample, rate=rfi.rate, rfi_type=rfi_type)
     if frb.snr > 0: # dont save sim with snr == 0
         example = convert_to_example(frb, sim_number)
         tfrecordwriter.write(example.SerializeToString())
         sim_number += 1
+        global frb_sims
+        frb_sims += 1
     else:
-        print("FRB created with snr == 0")
-
+        print("Pulsar creation failed due to signal-to-noise-ratio")
     return sim_number
 
 def make_data(rfi, writer, rank, sim_num, sims_per_rank):
     # make sims with unmodified background
     sim_num = inject_and_save(rfi, writer, sim_num, None)
-    out = f"Done {sim_num - (rank * sims_per_rank)}/{sims_per_rank}    \r"
+    out = f"Done {sim_num - (rank * sims_per_rank)}/{sims_per_rank}\t\t\r"
     sys.stdout.write(out)
     sys.stdout.flush()
 
     # make sims with modified background
     for idx, mods in enumerate(modifications):
+        if interrupted: close_gracefully()
         # Allow multiple modifications to be applied before saving
         for m in mods:
             rfi.apply_function(m['func'], name=m['name'], input=m['input'],
@@ -147,7 +185,7 @@ def make_data(rfi, writer, rank, sim_num, sims_per_rank):
                                time_range=m['time_range'], **m['params'])
 
         sim_num = inject_and_save(rfi, writer, sim_num, 'modded')
-        out = f"Done {sim_num - (rank * sims_per_rank)}/{sims_per_rank}    \r"
+        out = f"Done {sim_num - (rank * sims_per_rank)}/{sims_per_rank}\t\t\r"
         sys.stdout.write(out)
         sys.stdout.flush()
 
@@ -159,12 +197,14 @@ def make_data(rfi, writer, rank, sim_num, sims_per_rank):
     return sim_num, shape, duration
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, signal_handler)
+
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
 
     group = 30 # 30 vdif files is ~2.5s
-    aro_files = np.sort(glob.glob('/home/rylan/dunlap-2.0/data/vdif/*.vdif'))
+    aro_files = np.sort(glob.glob('/scratch/r/rhlozek/rylan/aro_rfi/*vdif'))
     while size * group >= aro_files.shape[0]:
        aro_files = np.hstack([aro_files, aro_files])
 
@@ -178,9 +218,12 @@ if __name__ == "__main__":
 
     init_sim_num = rank * sims_per_rank
 
-    tfrecord = '/home/rylan/dunlap-2.0/data/data_{}.tfrecord'.format(rank)
+    output_dir = "/scratch/r/rhlozek/rylan/training_data/"
+    tfrecord = f"{output_dir}{rank:03d}.tfrecord"
 
-    with tf.python_io.TFRecordWriter(tfrecord) as writer:
+    summary_file = f"{output_dir}dataset_summary.csv"
+
+    with tf.io.TFRecordWriter(tfrecord) as writer:
         rank_files = sf.open(aro_files[(rank * group):(rank + 1)  * group])
 
         # Make the data with rfi from ARO as the background, use the shape and
@@ -192,3 +235,6 @@ if __name__ == "__main__":
         for rfiClass in rfi_types:
             rfi = rfiClass(shape=shape, duration=duration)
             sim_num, _, _ = make_data(rfi, writer, rank, sim_num, sims_per_rank)
+
+    close_gracefully()
+

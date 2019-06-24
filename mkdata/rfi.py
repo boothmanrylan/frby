@@ -280,7 +280,11 @@ def rand_sinusoid(amp, freq, phase):
     freq = 2 * np.pi * np.random.normal(freq)
     phase = np.random.normal(phase)
     sinusoid = np.sin if np.random.normal() > 0 else np.cos
-    return lambda x: amp * sinusoid((x * freq) + phase)
+    def _rand_sinusoid(x):
+        try: x = x.value
+        except: pass
+        return amp * sinusoid((x * freq) + phase)
+    return _rand_sinusoid
 
 
 def output(x, rfi, boolean, add):
