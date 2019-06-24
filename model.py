@@ -47,6 +47,10 @@ tf.app.flags.DEFINE_string('summary_file',
                            'File to store model comparisons in after each run')
 tf.app.flags.DEFINE_integer('identifier', 1, 'Slurm job submission number')
 tf.app.flags.DEFINE_integer("seed", 12345, "Seed for reproducibility")
+tf.app.flags.DEFINE_integer("prefetch_buffer_size", 1,
+                            "Number of samples to prefetch during data processing")
+tf.app.flags.DEFINE_integer("num_parallel_calls", 20,
+                            "The number of parallel calls used in data processing")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -82,14 +86,17 @@ def input_fn(pattern, classification, repeat=True):
     """
     Not 100% necessary to shuffle here because the samples were shuffled during
     the creation of the TFRecords, therefore we stop shuffling here so that the
-    data output by input_fn is always in the same order allowing it to be
-    passed to estimators and their results easily compared sample by sample.
+    data output by input_fn is always in the same order, therefore when passed
+    to multiple different estimators, the estimator outputs can be easily
+    compared sample by sample.
     """
     records = tf.data.Dataset.list_files(pattern, shuffle=False)
     dataset = records.interleave(tf.data.TFRecordDataset, cycle_length=4)
     # dataset = dataset.shuffle(buffer_size=FLAGS.buffer_size)
-    dataset = dataset.map(map_func=lambda x: parse_fn(x, classification))
+    dataset = dataset.map(map_func=lambda x: parse_fn(x, classification),
+                          num_parallel_calls=FLAGS.num_parallel_calls)
     dataset = dataset.batch(FLAGS.batch_size * FLAGS.num_gpus)
+    dataset = dataset.prefetch(FLAGS.prefetch_buffer_size)
     if repeat:
         dataset = dataset.repeat()
     return dataset
