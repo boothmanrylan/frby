@@ -22,6 +22,10 @@ def read_vdif(vdif_files, rate_in, rate_out=1e-3*u.MHz):
                                 vdif_files, saved to use in metadata later.
         rate_out (Quantity):    The sample out of the data after being reduced.
     """
+    # Ensure rate_in and rate_out are both quantities with the same units
+    rate_in = rate_in.to(u.MHz)
+    rate_out = rate_out.to(u.MHz)
+
     # Ensure that vdif_files is a sequentialfile object, convert if not
     try:
         temp = vdif_files.file_size # Will fail if not a sequentialfile
