@@ -1,3 +1,4 @@
+import pickle
 import argparse
 import numpy as np
 import os
@@ -16,7 +17,7 @@ from torchvision import transforms
 
 import horovod.torch as hvd
 
-from torch_dataset import HDF5Dataset, CHIMEDataset
+from torch_dataset import HDF5Dataset, CHIMEDataset, SimpleLines
 
 vgg16 = [64, 64, 'M', 128, 128, 'M', 256, 256, 256,
          'M', 512, 512, 512, 'M', 512, 512, 512, 'M']
@@ -25,8 +26,8 @@ SCRATCH = '/scratch/r/rhlozek/rylan/'
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch_size', type=int, default=64)
-parser.add_argument('--epochs', type=int, default=25)
-parser.add_argument('--data', type=str, default=SCRATCH + 'split_data/')
+parser.add_argument('--epochs', type=int, default=3)
+parser.add_argument('--data', type=str, default=SCRATCH + 'unprocessed_data/')
 parser.add_argument('-lr', type=float, default=0.0125)
 parser.add_argument('--momentum', type=float, default=0.9)
 parser.add_argument('--wd', type=float, default=5e-5)
@@ -35,6 +36,12 @@ parser.add_argument('--T', type=int, default=25)
 parser.add_argument('--classes', type=int, default=10)
 parser.add_argument('--seed', type=int, default=12345)
 parser.add_argument('--checkpoint', type=str, default=SCRATCH+'models/default/')
+parser.add_argument('--height', type=int, default=64)
+parser.add_argument('--width', type=int, default=64)
+parser.add_argument('--filter-height', type=int, default=16)
+parser.add_argument('--filter-width', type=int, default=16)
+parser.add_argument('--train_size', type=int, default=5000)
+parser.add_argument('--eval_size', type=int, default=500)
 args = parser.parse_args()
 
 
@@ -59,8 +66,8 @@ class Model(nn.Module):
     def __init__(self, nclasses, config, batch_norm=True, in_channels=1,
                  dropoutP=0.5, bayes=False):
         super().__init__()
-        self.nclasses = nclasses
         self.p = dropoutP
+        self.nclasses = nclasses
         self.bayes = bayes
         self.N = None # the number of samples used to train the model
         layers = []
@@ -117,7 +124,7 @@ def bayes(model, x, T):
 
 
 def train(model, optimizer, data_loader, epochs, checkpoint_path=None):
-    # load model from checkpoint if it exists
+    # model from checkpoint if it exists
     if hvd.rank() == 0 and checkpoint_path is not None:
         try:
             checkpoint = torch.load(checkpoint_path)
@@ -141,27 +148,26 @@ def train(model, optimizer, data_loader, epochs, checkpoint_path=None):
     model.train()
     for epoch in range(start_epoch, epochs):
         for batch, (data, target) in enumerate(data_loader):
-            data, target = data.cuda(), target.cuda() # move data to GPU
-            optimizer.zero_grad() # clear the gradients of all tensors
-            output = model(data)
-            loss = F.cross_entropy(output, target)
-            loss.backward() # compute gradients
-            optimizer.step() # update parameters
+            optimizer.zero_grad() # clear previous gradients
+            output = model(data.cuda())
+            loss = F.cross_entropy(output, target.cuda())
+            loss.backward() # run back-prop
+            optimizer.step() # update model params
             if hvd.rank() == 0:
                 print(f"Epoch: {epoch+1}\tBatch: {batch+1}\tLoss: {loss.item()}")
         # save checkpoint after every 10th epoch and after the final epoch
-        if (epoch + 1) % 10 == 0 or epoch + 1 == epochs:
-            if hvd.rank() == 0 and checkpoint_path is not None:
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    }, checkpoint_path)
+        # if (epoch + 1) % 10 == 0 or epoch + 1 == epochs:
+        #     if hvd.rank() == 0 and checkpoint_path is not None:
+        #         torch.save({
+        #             'epoch': epoch + 1,
+        #             'model_state_dict': model.state_dict(),
+        #             'optimizer_state_dict': optimizer.state_dict(),
+        #             }, checkpoint_path)
 
 
 def gather(val, name):
     tensor = val.clone().detach()
-    avg_tensor = hvd.allreduce(tensor, name='name')
+    avg_tensor = hvd.allreduce(tensor, name=name) # TODO: name='name'
     # check if there is a single element in avg_tensor
     if torch.tensor(avg_tensor.shape).eq(1).all():
         avg_tensor = avg_tensor.item()
@@ -192,12 +198,14 @@ def evaluate(model, data_loader, length, checkpoint_path=None):
                 out = bayes(model, data, args.T)
             else:
                 out = model(data)
-            pred = out.argmax(dim=1, keepdim=True)
-            accuracy += pred.eq(target.data.view_as(pred)).cpu().float().sum()
+            pred = torch.sigmoid(out).round()
+            pred = out.argmax(dim=1, keepdim=True).float()
+            accuracy += pred.eq(target.data.view_as(pred).float()).cpu().float().sum()
         accuracy /= length
         accuracy = gather(accuracy, 'avg_accuracy')
         if hvd.rank() == 0:
             print(f"Accuracy: {accuracy}")
+    return accuracy
 
 
 def build_data_loader(dataset, dataset_kwargs, loader_kwargs):
@@ -274,7 +282,7 @@ def chime_frbs(model, checkpoint_path, chime_path, height, width):
     for frb in frbs:
         if not hvd.rank(): print(f"working on {frb}...")
         dset, sampler, loader = build_data_loader(CHIMEDataset,
-            {'file_path': f'{chime_path}/reduced_chime_frbs.hdf5',
+            {'file_path': f'{chime_path}/chime_frbs.hdf5',
              'frb': frb, 'height': height, 'width': width},
             {'batch_size': args.batch_size, 'num_workers': 0,
              'pin_memory': False}
@@ -302,6 +310,36 @@ def chime_frbs(model, checkpoint_path, chime_path, height, width):
 
             dset.close()
 
+def train_at_scale(scale):
+    train_dset, train_sampler, train_loader = build_data_loader(
+        SimpleLines,
+        {'height': args.height, 'width': args.width, 'size': args.train_size,
+         'scale': scale},
+        {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
+    )
+
+    eval_dset, eval_sampler, eval_loader = build_data_loader(
+        SimpleLines,
+        {'height': args.height, 'width': args.width, 'size': args.eval_size,
+         'scale': scale},
+        {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
+    )
+
+    model = Model(nclasses=2, config=vgg16, bayes=False)
+    model.cuda() # place model on GPU. Must be done before constructing optimizer.
+    optimizer = optim.SGD(model.parameters(), lr=args.lr,
+                          momentum=args.momentum, weight_decay=args.wd)
+
+    # Distribute optimizer with horovod
+    optimizer = hvd.DistributedOptimizer(
+        optimizer, named_parameters=model.named_parameters()
+    )
+
+    train(model, optimizer, train_loader, args.epochs, None)
+
+    acc = evaluate(model, eval_loader, len(eval_sampler), None)
+    return acc
+
 
 if __name__ == '__main__':
     hvd.init()
@@ -315,106 +353,104 @@ if __name__ == '__main__':
     #################################################################
     s_train_dset, s_train_sampler, s_train_loader = build_data_loader(HDF5Dataset,
         {'directory': args.data, 'set': 'split', 'training': True,
-         'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': None},
+         'rebalance': 50000, 'verbose': not hvd.rank(), 'transform': None},
         {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
     )
 
     inner_model = Model(nclasses=2, config=vgg16, bayes=False)
     inner_model.cuda() # place model on GPU. Must be done before constructing optimizer.
-    # inner_optimizer = optim.SGD(inner_model.parameters(),
-    #                             lr=args.lr,
-    #                             momentum=args.momentum,
-    #                             weight_decay=args.wd)
+    inner_optimizer = optim.SGD(inner_model.parameters(),
+                                lr=args.lr,
+                                momentum=args.momentum,
+                                weight_decay=args.wd)
 
-    # # Distribute optimizer with horovod
-    # inner_optimizer = hvd.DistributedOptimizer(
-    #     inner_optimizer,
-    #     named_parameters=inner_model.named_parameters()
-    # )
+    # Distribute optimizer with horovod
+    inner_optimizer = hvd.DistributedOptimizer(
+        inner_optimizer,
+        named_parameters=inner_model.named_parameters()
+    )
 
-    # train(inner_model, inner_optimizer, s_train_loader,
-    #       args.epochs, args.checkpoint + 'inner_model')
+    train(inner_model, inner_optimizer, s_train_loader,
+          args.epochs, args.checkpoint + 'inner_model')
     inner_model.N = len(s_train_sampler)
-
-    data_shape = s_train_dset[0][0].shape
 
     s_train_dset.close()
 
     #################################################################
     # Evaluate the inner model
     #################################################################
-    # s_eval_dset, s_eval_sampler, s_eval_loader = build_data_loader(HDF5Dataset,
-    #     {'directory': args.data, 'set': 'split', 'training': False,
-    #      'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': None},
-    #     {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
-    # )
+    s_eval_dset, s_eval_sampler, s_eval_loader = build_data_loader(HDF5Dataset,
+        {'directory': args.data, 'set': 'split', 'training': False,
+         'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': None},
+        {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
+    )
 
-    # evaluate(inner_model, s_eval_loader, len(s_eval_sampler),
-    #          args.checkpoint + 'inner_model')
+    evaluate(inner_model, s_eval_loader, len(s_eval_sampler),
+             args.checkpoint + 'inner_model')
 
-    # s_eval_dset.close()
+    s_eval_dset.close()
 
     #################################################################
     # Train the outer model
     #################################################################
-    # o_train_dset, o_train_sampler, o_train_loader = build_data_loader(HDF5Dataset,
-    #     {'directory': args.data, 'set': 'overview', 'training': True,
-    #      'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': add_noise},
-    #     {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
-    # )
+    o_train_dset, o_train_sampler, o_train_loader = build_data_loader(HDF5Dataset,
+        {'directory': args.data, 'set': 'overview', 'training': True,
+         'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': None},
+        {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
+    )
 
-    # outer_model = Model(nclasses=3, config=vgg16, bayes=True)
-    # outer_model.cuda() # place model on GPU. Must be done before constructing optimizer.
-    # outer_optimizer = optim.SGD(outer_model.parameters(),
-    #                             lr=args.lr,
-    #                             momentum=args.momentum,
-    #                             weight_decay=args.wd)
+    outer_model = Model(nclasses=2, config=vgg16, bayes=False)
+    outer_model.cuda() # place model on GPU. Must be done before constructing optimizer.
+    outer_optimizer = optim.SGD(outer_model.parameters(),
+                                lr=args.lr,
+                                momentum=args.momentum,
+                                weight_decay=args.wd)
 
-    # # Distribute optimizer with horovod
-    # outer_optimizer = hvd.DistributedOptimizer(
-    #     outer_optimizer,
-    #     named_parameters=outer_model.named_parameters()
-    # )
+    # Distribute optimizer with horovod
+    outer_optimizer = hvd.DistributedOptimizer(
+        outer_optimizer,
+        named_parameters=outer_model.named_parameters()
+    )
 
-    # train(outer_model, outer_optimizer, o_train_loader,
-    #       args.epochs, args.checkpoint + 'outer_model')
-    # outer_model.N = len(o_train_sampler)
+    train(outer_model, outer_optimizer, o_train_loader,
+          args.epochs, args.checkpoint + 'outer_model')
+    outer_model.N = len(o_train_sampler)
 
-    # o_train_dset.close()
+    o_train_dset.close()
 
     #################################################################
     # Evaluate the outer model
     #################################################################
-    # o_eval_dset, o_eval_sampler, o_eval_loader = build_data_loader(HDF5Dataset,
-    #     {'directory': args.data, 'set': 'overview', 'training': False,
-    #      'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': add_noise},
-    #     {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
-    # )
+    o_eval_dset, o_eval_sampler, o_eval_loader = build_data_loader(HDF5Dataset,
+        {'directory': args.data, 'set': 'overview', 'training': False,
+         'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': None},
+        {'batch_size': args.batch_size, 'num_workers': 0, 'pin_memory': True}
+    )
 
-    # evaluate(outer_model, o_eval_loader, len(o_eval_sampler),
-    #          args.checkpoint + 'outer_model')
+    evaluate(outer_model, o_eval_loader, len(o_eval_sampler),
+             args.checkpoint + 'outer_model')
 
-    # o_eval_dset.close()
+    o_eval_dset.close()
 
     #################################################################
     # Evaluate the two models combined
     #################################################################
-    # eval_dset, eval_sampler, eval_loader = build_data_loader(HDF5Dataset,
-    #     {'directory': args.data, 'set': 'complete', 'training': False,
-    #      'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': None},
-    #     {'batch_size': 1, 'num_workers': 0, 'pin_memory': True}
-    # )
+    eval_dset, eval_sampler, eval_loader = build_data_loader(HDF5Dataset,
+        {'directory': args.data, 'set': 'complete', 'training': False,
+         'rebalance': 10000, 'verbose': not hvd.rank(), 'transform': None},
+        {'batch_size': 1, 'num_workers': 0, 'pin_memory': True}
+    )
 
-    # two_step_model(inner_model, outer_model, eval_loader,
-    #                len(eval_sampler), args.checkpoint)
+    two_step_model(inner_model, outer_model, eval_loader,
+                   len(eval_sampler), args.checkpoint)
 
-    # eval_dset.close()
+    eval_dset.close()
 
     #################################################################
     # Evaluate the first model on CHIME data
     #################################################################
-    chime_path = '/scratch/r/rhlozek/rylan/chime_data'
-    chime_frbs(inner_model, args.checkpoint + 'inner_model', chime_path,
-               int(data_shape[1]), int(data_shape[2]))
+    # chime_path = '/scratch/r/rhlozek/rylan/chime_data'
+    # chime_frbs(inner_model, args.checkpoint + 'inner_model', chime_path,
+    #            args.height, args.width)
 
 
